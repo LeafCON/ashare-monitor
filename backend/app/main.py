@@ -75,16 +75,26 @@ def update_prices():
         for a in alerts:
             sym = a.symbol
             if sym not in symbol_info:
-                symbol_info[sym] = {"name": a.name, "market": a.market.value}
-            elif getattr(a, 'is_primary', True):
-                # Primary alert's name takes precedence
-                symbol_info[sym] = {"name": a.name, "market": a.market.value}
+                symbol_info[sym] = {
+                    "name": a.name,
+                    "market": a.market.value,
+                    "secid": getattr(a, "secid", None),
+                }
+            elif getattr(a, "is_primary", True):
+                symbol_info[sym] = {
+                    "name": a.name,
+                    "market": a.market.value,
+                    "secid": getattr(a, "secid", None) or symbol_info[sym].get("secid"),
+                }
 
         all_symbols = list(symbol_info.keys())
         logger.info(f"Updating prices for {len(all_symbols)} symbols: {', '.join(all_symbols)}")
 
         # Batch fetch all at once
-        batch_results = fetch_prices_batch(all_symbols)
+        batch_results = fetch_prices_batch(
+            all_symbols,
+            {sym: info.get("secid") for sym, info in symbol_info.items()},
+        )
 
         updated = 0
         for symbol, data in batch_results.items():
@@ -141,6 +151,25 @@ def seed_default_alerts():
                 db.add(alert)
             db.commit()
             logger.info(f"Seeded {len(items)} default watchlist items")
+        from .services.eastmoney import INDEX_WATCHLIST
+        for item in INDEX_WATCHLIST:
+            exists = db.query(AlertSetting).filter(
+                AlertSetting.symbol == item["symbol"],
+                AlertSetting.is_primary == True,  # noqa: E712
+            ).first()
+            if exists:
+                if not exists.secid:
+                    exists.secid = item["secid"]
+                continue
+            db.add(AlertSetting(
+                symbol=item["symbol"],
+                name=item["name"],
+                market=MarketType(item["market"]),
+                secid=item["secid"],
+                enabled=True,
+                is_primary=True,
+            ))
+        db.commit()
     finally:
         db.close()
 
@@ -301,7 +330,7 @@ class TelegramAuthMiddleware(BaseHTTPMiddleware):
 app.add_middleware(TelegramAuthMiddleware)
 
 # Register API routers
-from .routers import portfolio, transactions, alerts, prices, dashboard, cash, watchlist, quant, earnings, snapshots, macro, market
+from .routers import portfolio, transactions, alerts, prices, dashboard, cash, watchlist, quant, earnings, snapshots, macro, market, search
 app.include_router(dashboard.router)
 app.include_router(portfolio.router)
 app.include_router(transactions.router)
@@ -314,6 +343,7 @@ app.include_router(earnings.router)
 app.include_router(snapshots.router)
 app.include_router(macro.router)
 app.include_router(market.router)
+app.include_router(search.router)
 
 # ── Static files (frontend) ──────────────────────────────────────────────────
 

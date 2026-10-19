@@ -198,7 +198,7 @@ def _emit(
         _record_order_intent(db, alert.symbol, side, price, True, "未接入券商，未提交委托")
     else:
         _record_order_intent(db, alert.symbol, side, price, False, "请手动确认后自行下单")
-    sent = send_telegram_alert(message)
+    sent = send_telegram_alert(message, force_live=True)
     db.add(AlertHistory(
         symbol=alert.symbol,
         alert_type=alert_type,
@@ -228,6 +228,13 @@ def check_alerts(db: Session) -> int:
         cached = db.query(PriceCache).filter(PriceCache.symbol == alert.symbol).first()
         if not cached or cached.price is None:
             continue
+        has_strategy = any(
+            value is not None
+            for value in (alert.target_buy, alert.target_sell, alert.stop_loss, alert.pct_threshold)
+        )
+        if not has_strategy:
+            continue
+
         price = cached.price
         change_pct = cached.change_pct
 
@@ -246,11 +253,11 @@ def check_alerts(db: Session) -> int:
             if _emit(db, alert, "stop_loss", rule, price, change_pct, "sell", cfg, auto):
                 triggered += 1
 
-        threshold = alert.pct_threshold if alert.pct_threshold is not None else cfg["change_alert_pct"]
+        threshold = alert.pct_threshold
         is_primary = getattr(alert, "is_primary", True)
         if (
             is_primary
-            and threshold
+            and threshold is not None
             and change_pct is not None
             and abs(change_pct) >= float(threshold)
             and not _in_cooldown(db, alert.symbol, "pct_change", cfg["cooldown"])

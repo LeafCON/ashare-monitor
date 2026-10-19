@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 import requests
 
 from ..symbols import sina_code
+from .eastmoney import KNOWN_SECIDS, fetch_secids
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,9 @@ def _fetch_yahoo(symbol: str) -> Dict[str, Any]:
 
 def fetch_price(symbol: str) -> Dict[str, Any]:
     symbol = symbol.strip()
+    known = KNOWN_SECIDS.get(symbol.upper())
+    if known:
+        return fetch_secids([(symbol.upper(), known)]).get(symbol.upper(), {"symbol": symbol, "error": "no quote"})
     if sina_code(symbol):
         return fetch_cn_prices([symbol]).get(symbol, {"symbol": symbol, "error": "no quote"})
     return _fetch_yahoo(symbol)
@@ -225,14 +229,27 @@ def fetch_cn_price(symbol: str) -> Dict[str, Any]:
     return fetch_price(symbol)
 
 
-def fetch_prices_batch(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Fetch many symbols. A-shares go out as one HTTP batch."""
-    cn = [sym for sym in symbols if sina_code(sym)]
-    other = [sym for sym in symbols if sym not in cn]
+def fetch_prices_batch(symbols: List[str], secids: Dict[str, str] | None = None) -> Dict[str, Dict[str, Any]]:
+    """Fetch many symbols. A-shares use Sina. US stocks and indices use Eastmoney."""
+    supplied = {key: value for key, value in (secids or {}).items() if value}
+    em_pairs = []
+    cn = []
+    other = []
+    for symbol in symbols:
+        secid = supplied.get(symbol) or KNOWN_SECIDS.get(symbol)
+        if sina_code(symbol):
+            cn.append(symbol)
+        elif secid:
+            em_pairs.append((symbol, secid))
+        else:
+            other.append(symbol)
+
     results: Dict[str, Dict[str, Any]] = {}
+    if em_pairs:
+        results.update(fetch_secids(em_pairs))
     if cn:
         results.update(fetch_cn_prices(cn))
-    for sym in other:
-        results[sym] = _fetch_yahoo(sym)
+    for symbol in other:
+        results[symbol] = _fetch_yahoo(symbol)
         time.sleep(0.3)
     return results

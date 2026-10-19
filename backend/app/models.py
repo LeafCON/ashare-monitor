@@ -76,7 +76,8 @@ class AlertSetting(Base):
     is_primary = Column(Boolean, default=True)   # True = main level, False = sub-level
     label = Column(String(100), nullable=True)    # Optional label e.g. "$280买入档"
     amount = Column(String(200), nullable=True)   # Buy/sell amount description e.g. "$15,000" or "减仓30%"
-    pct_threshold = Column(Float, nullable=True)          # 单标的涨跌幅阈值，空则用全局
+    pct_threshold = Column(Float, nullable=True)          # 单标的涨跌幅阈值，空则不启用该规则
+    secid = Column(String(32), nullable=True)            # 行情源证券编号，如 105.AAPL / 100.SPX
     expires_at = Column(DateTime, nullable=True)          # 90天后过期
     last_triggered_at = Column(DateTime, nullable=True)   # 最近触发时间
     created_at = Column(DateTime, default=utcnow)

@@ -58,6 +58,7 @@ class WatchlistAddRequest(BaseModel):
     target_buy: Optional[float] = None
     target_sell: Optional[float] = None
     stop_loss: Optional[float] = None
+    secid: Optional[str] = None
     enabled: bool = True
 
 
@@ -126,6 +127,8 @@ def add_to_watchlist(payload: WatchlistAddRequest, db: Session = Depends(get_db)
         if payload.stop_loss is not None:
             existing.stop_loss = payload.stop_loss
         existing.enabled = payload.enabled
+        if payload.secid:
+            existing.secid = payload.secid
         db.commit()
         db.refresh(existing)
         alert = existing
@@ -137,11 +140,31 @@ def add_to_watchlist(payload: WatchlistAddRequest, db: Session = Depends(get_db)
             target_buy=payload.target_buy,
             target_sell=payload.target_sell,
             stop_loss=payload.stop_loss,
+            secid=payload.secid,
             enabled=payload.enabled,
         )
         db.add(alert)
         db.commit()
         db.refresh(alert)
+
+    from ..services.price_service import fetch_prices_batch
+    from ..models import PriceCache
+    from datetime import datetime, timezone
+    quote_map = fetch_prices_batch([alert.symbol], {alert.symbol: alert.secid} if alert.secid else None)
+    quote = quote_map.get(alert.symbol) or {}
+    if quote.get("price") is not None:
+        db.merge(PriceCache(
+            symbol=alert.symbol,
+            name=alert.name or quote.get("name") or alert.symbol,
+            price=quote["price"],
+            previous_close=quote.get("previous_close"),
+            change=quote.get("change"),
+            change_pct=quote.get("change_pct"),
+            volume=quote.get("volume"),
+            currency=quote.get("currency") or ("CNY" if alert.market == MarketType.cn else "USD"),
+            updated_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
 
     # Attach cached price if available
     cached = db.query(PriceCache).filter(PriceCache.symbol == alert.symbol).first()

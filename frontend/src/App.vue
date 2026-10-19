@@ -57,6 +57,10 @@ const cashAccounts = ref([])
 const cashLogs = ref([])
 const totalAssets = ref(null)
 const testingAlert = ref(false)
+const stockQuery = ref('')
+const searchResults = ref([])
+let searchTimer = null
+const holdingForm = ref({ symbol: '', name: '', shares: null, cost_price: null, market: 'cn' })
 const notifyStatus = ref(null)
 const showAddAlert = ref(false)
 const showAddTx = ref(false)
@@ -260,6 +264,47 @@ async function loadCashAccounts() {
 // ── Macro Indicators ───────────────────────────────────────────────────────
 async function loadMacro() {
   try { macroIndicators.value = await api('GET', '/api/macro') } catch (e) { console.error('Macro load error:', e) }
+}
+function onStockQuery() {
+  clearTimeout(searchTimer)
+  const q = stockQuery.value.trim()
+  if (!q) { searchResults.value = []; return }
+  searchTimer = setTimeout(async () => {
+    try { searchResults.value = await api('GET', '/api/search?q=' + encodeURIComponent(q)) }
+    catch (e) { console.error(e) }
+  }, 300)
+}
+async function addSearched(item) {
+  try {
+    await api('POST', '/api/watchlist', { symbol: item.symbol, name: item.name, market: item.market, secid: item.secid, enabled: true })
+    stockQuery.value = ''
+    searchResults.value = []
+    await loadDashboard()
+    await loadAlerts()
+  } catch (e) { alert('添加失败: ' + e.message) }
+}
+async function saveHolding() {
+  const f = holdingForm.value
+  if (!f.symbol || f.shares == null || f.cost_price == null) { alert('请填写代码、股数和成本价'); return }
+  try {
+    portfolio.value = await api('POST', '/api/portfolio/holdings', { symbol: f.symbol, name: f.name, shares: f.shares, cost_price: f.cost_price, market: f.market })
+    holdingForm.value = { symbol: '', name: '', shares: null, cost_price: null, market: 'cn' }
+    loadDashboard(); loadAlerts()
+    nextTick(() => { renderHoldingPie(); renderHoldingPnl() })
+  } catch (e) { alert('保存持仓失败: ' + e.message) }
+}
+function editHolding(h) {
+  const cn = h.symbol.endsWith('.SS') || h.symbol.endsWith('.SZ') || h.symbol.endsWith('.BJ')
+  holdingForm.value = { symbol: h.symbol, name: h.name, shares: h.shares, cost_price: Number(h.avg_cost.toFixed(4)), market: cn ? 'cn' : 'us' }
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+async function removeHolding(symbol) {
+  if (!confirm('删除 ' + symbol + ' 的持仓记录？')) return
+  try {
+    portfolio.value = await api('DELETE', '/api/portfolio/holdings/' + encodeURIComponent(symbol))
+    loadDashboard()
+    nextTick(() => { renderHoldingPie(); renderHoldingPnl() })
+  } catch (e) { alert('删除失败: ' + e.message) }
 }
 
 // ── Earnings Calendar ──────────────────────────────────────────────────────
@@ -685,6 +730,13 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
   <!-- Dashboard -->
   <div v-if="tab==='dashboard'" class="container">
     <div class="page-header"><h2>📈 实时监控看板</h2><button class="btn-outline btn-sm" @click="loadDashboard();loadMacro()">🔄 刷新</button></div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="form-group"><label>搜索股票并加入自选</label><input v-model="stockQuery" @input="onStockQuery" placeholder="代码或名称，如 600519、茅台、AAPL"></div>
+      <div v-for="item in searchResults" :key="item.symbol" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border)">
+        <span><b class="mono">{{ item.symbol }}</b> {{ item.name }} <small>{{ item.market === 'cn' ? 'A股' : '美股' }}</small></span>
+        <button type="button" class="btn-primary btn-sm" @click="addSearched(item)">添加</button>
+      </div>
+    </div>
 
     <!-- Macro Indicators Bar -->
     <div class="macro-bar" v-if="macroIndicators.length > 0">
@@ -779,6 +831,17 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
   <!-- Portfolio -->
   <div v-if="tab==='portfolio'" class="container">
     <div class="page-header"><h2>💰 持仓管理</h2><button class="btn-outline btn-sm" @click="loadPortfolio();loadDashboard()">🔄 刷新</button></div>
+    <div class="card form-card" style="margin-bottom:16px">
+      <form @submit.prevent="saveHolding" class="form-grid">
+        <div class="form-group"><label>代码</label><input v-model="holdingForm.symbol" placeholder="600519 或 AAPL" required></div>
+        <div class="form-group"><label>名称</label><input v-model="holdingForm.name" placeholder="贵州茅台"></div>
+        <div class="form-group"><label>市场</label><select v-model="holdingForm.market"><option value="cn">A股</option><option value="us">美股</option></select></div>
+        <div class="form-group"><label>股数</label><input v-model.number="holdingForm.shares" type="number" min="0" step="1" required></div>
+        <div class="form-group"><label>成本价</label><input v-model.number="holdingForm.cost_price" type="number" min="0" step="0.01" required></div>
+        <div class="form-group form-actions"><button type="submit" class="btn-primary">保存持仓</button></div>
+      </form>
+      <p class="hint">直接记录持仓，不扣现金。同一代码再次保存会按新的股数和成本价覆盖。</p>
+    </div>
     <div class="summary-cards" v-if="portfolio">
       <div class="summary-card"><div class="summary-icon">💰</div><div class="summary-content"><div class="summary-label">总成本</div><div class="summary-value">${{ fmtNum(portfolio.total_cost) }}</div></div></div>
       <div class="summary-card"><div class="summary-icon">📊</div><div class="summary-content"><div class="summary-label">总市值</div><div class="summary-value">${{ fmtNum(portfolio.total_value) }}</div></div></div>
@@ -787,7 +850,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
     <div class="grid-2">
       <div>
         <div class="card"><div class="card-header"><h3>🇺🇸 美股持仓</h3><span class="badge">{{ usHoldings.length }}</span></div>
-          <table class="table" v-if="usHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in usHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">${{ h.avg_cost.toFixed(2) }}</td><td class="mono">${{ h.current_price.toFixed(2) }}</td><td class="mono">${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span></td></tr></tbody></table>
+          <table class="table" v-if="usHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in usHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">${{ h.avg_cost.toFixed(2) }}</td><td class="mono">${{ h.current_price.toFixed(2) }}</td><td class="mono">${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">修改</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">删除</button></td></tr></tbody></table>
           <div class="mobile-card-list" v-if="usHoldings.length>0">
             <div v-for="h in usHoldings" :key="'m-ush-'+h.symbol" class="mobile-stock-card">
               <div class="mobile-stock-card-header">
@@ -808,7 +871,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
           </div>
           <div v-if="usHoldings.length===0" class="empty">暂无美股持仓</div></div>
         <div class="card mt"><div class="card-header"><h3>🇨🇳 A股持仓</h3><span class="badge">{{ cnHoldings.length }}</span></div>
-          <table class="table" v-if="cnHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in cnHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">¥{{ h.avg_cost.toFixed(2) }}</td><td class="mono">¥{{ h.current_price.toFixed(2) }}</td><td class="mono">¥{{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">¥{{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span></td></tr></tbody></table>
+          <table class="table" v-if="cnHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in cnHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">¥{{ h.avg_cost.toFixed(2) }}</td><td class="mono">¥{{ h.current_price.toFixed(2) }}</td><td class="mono">¥{{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">¥{{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">修改</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">删除</button></td></tr></tbody></table>
           <div class="mobile-card-list" v-if="cnHoldings.length>0">
             <div v-for="h in cnHoldings" :key="'m-cnh-'+h.symbol" class="mobile-stock-card">
               <div class="mobile-stock-card-header">
@@ -851,7 +914,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
       </div>
     </div>
     <div class="card" style="margin-bottom:16px" v-if="notifyStatus">
-      <div>推送：{{ notifyStatus.dry_run ? '后台告警只打印' : '后台告警会发 Telegram' }} · Token {{ notifyStatus.telegram_configured ? '已配置' : '未配置' }} · 冷却 {{ notifyStatus.cooldown_minutes }} 分钟 · 每日上限 {{ notifyStatus.max_per_day }} · 今日 {{ notifyStatus.sent_today }}</div>
+      <div>策略命中后会发送 Telegram，和「真发 Telegram」是同一个接口。没填写跌破价、突破价、止损价或涨跌幅阈值的股票只显示行情，不会告警。Token {{ notifyStatus.telegram_configured ? '已配置' : '未配置' }} · 冷却 {{ notifyStatus.cooldown_minutes }} 分钟 · 每日上限 {{ notifyStatus.max_per_day }}</div>
       <label style="display:inline-flex;align-items:center;gap:8px;margin-top:8px">
         <input type="checkbox" :checked="notifyStatus.auto_order" @change="toggleAutoOrder">
         自动下单（默认关）

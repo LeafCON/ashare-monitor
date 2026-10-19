@@ -45,3 +45,5 @@ def init_db():
         columns = {row[1] for row in rows}
         if "pct_threshold" not in columns:
             conn.exec_driver_sql("ALTER TABLE alert_settings ADD COLUMN pct_threshold FLOAT")
+        if "secid" not in columns:
+            conn.exec_driver_sql("ALTER TABLE alert_settings ADD COLUMN secid VARCHAR(32)")

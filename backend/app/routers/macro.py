@@ -1,4 +1,4 @@
-"""Macro Indicators endpoint — VIX, 10Y Treasury, USD Index, S&P 500, NASDAQ."""
+"""Macro indicators. Prices come from Eastmoney, which answers on this network."""
 
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from ..services.eastmoney import fetch_secids
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/macro", tags=["macro"])
 
-# ── Cache ─────────────────────────────────────────────────────────────────────
 _macro_cache: List[Dict[str, Any]] = []
 _cache_ts: float = 0
-_CACHE_TTL = 60  # 60 seconds
+_CACHE_TTL = 60
 
 MACRO_TICKERS = [
-    {"symbol": "^VIX", "name": "VIX 恐慌指数", "short": "VIX"},
-    {"symbol": "^TNX", "name": "美债10年利率", "short": "US10Y"},
-    {"symbol": "DX-Y.NYB", "name": "美元指数", "short": "DXY"},
-    {"symbol": "^GSPC", "name": "标普500", "short": "SPX"},
-    {"symbol": "^IXIC", "name": "纳斯达克", "short": "NASDAQ"},
+    {"symbol": "SPX", "name": "标普500", "short": "SPX", "secid": "100.SPX"},
+    {"symbol": "NDX", "name": "纳斯达克", "short": "NASDAQ", "secid": "100.NDX"},
+    {"symbol": "DJI", "name": "道琼斯", "short": "DJI", "secid": "100.DJIA"},
+    {"symbol": "DXY", "name": "美元指数", "short": "DXY", "secid": "100.UDI"},
 ]
 
 
@@ -38,85 +38,33 @@ class MacroIndicator(BaseModel):
 
 
 def _fetch_macro_data() -> List[Dict[str, Any]]:
-    """Fetch macro indicators using yfinance."""
-    from curl_cffi import requests as cffi_requests
-
-    session = cffi_requests.Session(impersonate="chrome")
+    pairs = [(item["symbol"], item["secid"]) for item in MACRO_TICKERS]
+    quotes = fetch_secids(pairs)
     results = []
-
-    YF_BASE = "https://query2.finance.yahoo.com/v8/finance/chart"
-
-    for ticker_info in MACRO_TICKERS:
-        symbol = ticker_info["symbol"]
-        try:
-            url = f"{YF_BASE}/{symbol}"
-            params = {"range": "2d", "interval": "1d"}
-            resp = session.get(url, params=params, timeout=10)
-
-            if resp.status_code != 200:
-                results.append({
-                    "symbol": symbol,
-                    "name": ticker_info["name"],
-                    "short_name": ticker_info["short"],
-                    "error": f"HTTP {resp.status_code}",
-                })
-                continue
-
-            data = resp.json()
-            chart = data.get("chart", {})
-
-            if chart.get("error"):
-                results.append({
-                    "symbol": symbol,
-                    "name": ticker_info["name"],
-                    "short_name": ticker_info["short"],
-                    "error": str(chart["error"]),
-                })
-                continue
-
-            result = chart.get("result", [{}])[0]
-            meta = result.get("meta", {})
-            price = meta.get("regularMarketPrice")
-            prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-
-            change = None
-            change_pct = None
-            if price is not None and prev_close is not None and prev_close != 0:
-                change = round(price - prev_close, 4)
-                change_pct = round((change / prev_close) * 100, 2)
-
-            results.append({
-                "symbol": symbol,
-                "name": ticker_info["name"],
-                "short_name": ticker_info["short"],
-                "price": round(price, 2) if price is not None else None,
-                "change": change,
-                "change_pct": change_pct,
-            })
-
-        except Exception as e:
-            logger.warning(f"Macro fetch error for {symbol}: {e}")
-            results.append({
-                "symbol": symbol,
-                "name": ticker_info["name"],
-                "short_name": ticker_info["short"],
-                "error": str(e),
-            })
-
+    for item in MACRO_TICKERS:
+        quote = quotes.get(item["symbol"]) or {}
+        if quote.get("price") is None:
+            logger.warning("Macro quote missing for %s: %s", item["symbol"], quote.get("error"))
+            continue
+        results.append({
+            "symbol": item["symbol"],
+            "name": item["name"],
+            "short_name": item["short"],
+            "price": quote["price"],
+            "change": quote.get("change"),
+            "change_pct": quote.get("change_pct"),
+        })
     return results
 
 
 @router.get("", response_model=List[MacroIndicator])
 def get_macro_indicators():
-    """Get current macro indicators with daily change."""
+    """Current index levels. Cards without a price are omitted."""
     global _macro_cache, _cache_ts
-
     now = time.time()
     if now - _cache_ts < _CACHE_TTL and _macro_cache:
         return _macro_cache
-
     data = _fetch_macro_data()
     _macro_cache = data
     _cache_ts = now
-
     return data
