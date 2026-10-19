@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.git/
+.gitignore
+data/*.db
+data/*.log
+data/.server.pid
+frontend/node_modules/
+frontend/dist/
+*.md
+screenshots/
+*.sh
+config.yaml

@@ -1,0 +1,58 @@
+{
+  "name": "stock-portfolio",
+  "version": "1.0.0",
+  "description": "Stock portfolio management skill for OpenClaw",
+  "author": "老李",
+  "tools": [
+    {
+      "name": "portfolio-summary",
+      "description": "Get portfolio summary including stocks and cash",
+      "command": "portfolio summary"
+    },
+    {
+      "name": "portfolio-holdings",
+      "description": "Get current stock holdings with P&L",
+      "command": "portfolio holdings"
+    },
+    {
+      "name": "portfolio-cash",
+      "description": "Get cash accounts by currency",
+      "command": "portfolio cash"
+    },
+    {
+      "name": "portfolio-buy",
+      "description": "Record a buy transaction",
+      "command": "portfolio buy {symbol} {shares} {price} [{note}]"
+    },
+    {
+      "name": "portfolio-sell",
+      "description": "Record a sell transaction",
+      "command": "portfolio sell {symbol} {shares} {price} [{note}]"
+    },
+    {
+      "name": "portfolio-transactions",
+      "description": "Get transaction history",
+      "command": "portfolio transactions"
+    },
+    {
+      "name": "portfolio-watch",
+      "description": "Get watchlist",
+      "command": "portfolio watch"
+    },
+    {
+      "name": "portfolio-watch-delete",
+      "description": "Delete a watchlist item by symbol",
+      "command": "portfolio watch-delete {symbol}"
+    },
+    {
+      "name": "portfolio-watch-update",
+      "description": "Update watchlist item price targets",
+      "command": "portfolio watch-update {symbol} [--buy price] [--sell price] [--stop price]"
+    },
+    {
+      "name": "portfolio-alerts",
+      "description": "Get alerts history",
+      "command": "portfolio alerts"
+    }
+  ]
+}

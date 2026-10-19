@@ -1,0 +1,26 @@
+services:
+  portfolio-monitor:
+    # 镜像名（本地构建）
+    image: portfolio-monitor:latest
+    build: .
+    container_name: portfolio-monitor
+    restart: unless-stopped
+    ports:
+      # 宿主机端口:容器端口
+      - "8802:8802"
+    volumes:
+      # 数据库持久化（SQLite 文件存在宿主机）
+      - ./data:/app/data
+      # 配置文件挂载（修改后重启容器即生效，无需重建镜像）
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      # 容器时区，影响告警推送和日志时间
+      - TZ=Asia/Shanghai
+      # 市场数据：Financial Datasets API（可选，缺失时自动降级为 yfinance）
+      - FINANCIAL_DATASETS_API_KEY=${FINANCIAL_DATASETS_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8802/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

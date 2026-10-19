@@ -1,0 +1,56 @@
+# 股票监控配置。Telegram token 放在 .env，不要写在这里。
+
+server:
+  host: "127.0.0.1"
+  port: 8802
+
+database:
+  url: "sqlite:///data/portfolio.db"
+
+monitor:
+  interval_active: 60
+  interval_idle: 300
+  # 未单独设置涨跌幅阈值的标的使用这个百分比
+  change_alert_pct: 3.0
+
+telegram:
+  bot_token: ""
+  chat_id: ""
+
+alert:
+  cooldown: 3600
+  max_per_day: 30
+
+# 自动下单默认关闭。看板里也可以切换。
+# 打开后仍不会点击交易软件，也不会保存交易密码。
+trading:
+  auto_order: false
+
+watchlist:
+  - symbol: "600519.SS"
+    name: "贵州茅台"
+    market: cn
+  - symbol: "000858.SZ"
+    name: "五粮液"
+    market: cn
+  - symbol: "601318.SS"
+    name: "中国平安"
+    market: cn
+  - symbol: "600036.SS"
+    name: "招商银行"
+    market: cn
+  - symbol: "000001.SZ"
+    name: "平安银行"
+    market: cn
+  - symbol: "300750.SZ"
+    name: "宁德时代"
+    market: cn
+  - symbol: "002594.SZ"
+    name: "比亚迪"
+    market: cn
+  - symbol: "601899.SS"
+    name: "紫金矿业"
+    market: cn
+  - symbol: "510300.SS"
+    name: "沪深300ETF"
+    market: cn

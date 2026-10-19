@@ -1,0 +1,930 @@
+#!/bin/bash
+# Stock Portfolio CLI
+# Usage: portfolio [command] [options]
+
+API_BASE="${PORTFOLIO_API_URL:-http://localhost:8802}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Helper functions
+api_get() {
+    curl -s "${API_BASE}$1" 2>/dev/null || echo '{"error":"API request failed"}'
+}
+
+api_post() {
+    curl -s -X POST "${API_BASE}$1" \
+        -H "Content-Type: application/json" \
+        -d "$2" 2>/dev/null || echo '{"error":"API request failed"}'
+}
+
+api_put() {
+    curl -s -X PUT "${API_BASE}$1" \
+        -H "Content-Type: application/json" \
+        -d "$2" 2>/dev/null || echo '{"error":"API request failed"}'
+}
+
+api_delete_no_body() {
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "${API_BASE}$1")
+    if [ "$http_code" = "204" ]; then
+        echo "✅ Deleted successfully"
+    elif [ "$http_code" = "404" ]; then
+        echo "❌ Not found"
+        return 1
+    else
+        echo "❌ Failed (HTTP $http_code)"
+        return 1
+    fi
+}
+
+# Commands
+cmd_summary() {
+    local data
+    data=$(api_get "/api/dashboard")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+ta = d.get("total_assets", {})
+p = d.get("portfolio", {})
+cash = d.get("cash_accounts", [])
+
+print("=== 资产总览 ===")
+print(f"总资产:   ${ta.get('total_assets_usd',0):,.0f} USD (汇率 {ta.get('usd_to_cny',7.2)})")
+print(f"股票市值: ${ta.get('stock_value_usd',0):,.0f} USD")
+print(f"美元现金: ${ta.get('cash_usd',0):,.0f} USD")
+print(f"人民币现金: ¥{ta.get('cash_cny',0):,.0f} CNY")
+print()
+print("=== 持仓 ===")
+for h in p.get("holdings", []):
+    pnl = h.get("pnl_pct", 0)
+    sign = "+" if pnl >= 0 else ""
+    curr = "¥" if h.get("currency") == "CNY" else "$"
+    print(f"  {h['symbol']} {h['name']}: {h['shares']}股 成本{curr}{h['avg_cost']:.2f} 现价{curr}{h.get('current_price',0):.2f} {sign}{pnl:.1f}%")
+print()
+total_pnl = p.get("total_pnl_pct", 0)
+sign = "+" if total_pnl >= 0 else ""
+print(f"股票合计盈亏: {sign}{total_pnl:.1f}%  (${p.get('total_pnl',0):+,.0f})")
+PYEOF
+}
+
+cmd_holdings() {
+    local data
+    data=$(api_get "/api/portfolio")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+print("=== 持仓明细 ===")
+for h in d.get("holdings", []):
+    pnl = h.get("pnl_pct", 0)
+    sign = "+" if pnl >= 0 else ""
+    curr = "¥" if h.get("currency") == "CNY" else "$"
+    mv = h.get("market_value", 0)
+    upnl = h.get("unrealized_pnl", 0)
+    print(f"  {h['symbol']} ({h['name']})")
+    print(f"    股数: {h['shares']}  成本: {curr}{h['avg_cost']:.2f}  现价: {curr}{h.get('current_price',0):.2f}")
+    print(f"    市值: {curr}{mv:,.2f}  盈亏: {curr}{upnl:+,.2f} ({sign}{pnl:.1f}%)")
+print()
+print(f"总成本: ${d.get('total_cost',0):,.2f}  总市值: ${d.get('total_value',0):,.2f}  总盈亏: ${d.get('total_pnl',0):+,.2f} ({d.get('total_pnl_pct',0):+.1f}%)")
+PYEOF
+}
+
+cmd_cash() {
+    local data
+    data=$(api_get "/api/cash")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+print("=== 现金账户 ===")
+for c in d:
+    curr_sym = "¥" if c["currency"] == "CNY" else "$"
+    print(f"  {c['currency']}: {curr_sym}{c['balance']:,.2f}")
+PYEOF
+}
+
+cmd_buy() {
+    local symbol=$1
+    local shares=$2
+    local price=$3
+    local note="${4:-买入}"
+    
+    if [[ -z "$symbol" || -z "$shares" || -z "$price" ]]; then
+        echo "Usage: portfolio buy <symbol> <shares> <price> [note]"
+        exit 1
+    fi
+    
+    local amount=$(echo "$shares * $price" | bc -l)
+    echo -e "${YELLOW}买入 $symbol: $shares 股 @ \$$price${NC}"
+    
+    local resp
+    resp=$(api_post "/api/transactions" "{
+        \"symbol\": \"$symbol\",
+        \"name\": \"$symbol\",
+        \"action\": \"buy\",
+        \"price\": $price,
+        \"shares\": $shares,
+        \"amount\": $amount,
+        \"fee\": 0,
+        \"date\": \"$(date -u +%Y-%m-%dT%H:%M:%S)\",
+        \"notes\": \"$note\"
+    }")
+    python3 -c "import sys,json; d=json.loads(sys.argv[1]); print('✅ 买入成功' if 'id' in d else f'❌ 失败: {d}')" "$resp"
+}
+
+cmd_sell() {
+    local symbol=$1
+    local shares=$2
+    local price=$3
+    local note="${4:-卖出}"
+    
+    if [[ -z "$symbol" || -z "$shares" || -z "$price" ]]; then
+        echo "Usage: portfolio sell <symbol> <shares> <price> [note]"
+        exit 1
+    fi
+    
+    local amount=$(echo "$shares * $price" | bc -l)
+    echo -e "${YELLOW}卖出 $symbol: $shares 股 @ \$$price${NC}"
+    
+    local resp
+    resp=$(api_post "/api/transactions" "{
+        \"symbol\": \"$symbol\",
+        \"name\": \"$symbol\",
+        \"action\": \"sell\",
+        \"price\": $price,
+        \"shares\": $shares,
+        \"amount\": $amount,
+        \"fee\": 0,
+        \"date\": \"$(date -u +%Y-%m-%dT%H:%M:%S)\",
+        \"notes\": \"$note\"
+    }")
+    python3 -c "import sys,json; d=json.loads(sys.argv[1]); print('✅ 卖出成功' if 'id' in d else f'❌ 失败: {d}')" "$resp"
+}
+
+cmd_watch() {
+    local watchlist alerts
+    watchlist=$(api_get "/api/watchlist")
+    alerts=$(api_get "/api/alerts")
+    python3 - "$watchlist" "$alerts" << 'PYEOF'
+import sys, json
+
+watchlist = json.loads(sys.argv[1])
+alerts = json.loads(sys.argv[2]) if len(sys.argv) > 2 else []
+
+# 按 symbol 聚合 alerts（含分批建仓计划）
+alert_map = {}
+for a in (alerts if isinstance(alerts, list) else []):
+    sym = a.get("symbol", "")
+    if sym not in alert_map:
+        alert_map[sym] = []
+    alert_map[sym].append(a)
+
+print("=== 监控列表 ===")
+for w in watchlist:
+    sym = w.get("symbol", "")
+    curr = "¥" if w.get("currency") == "CNY" else "$"
+    price = w.get("current_price", 0)
+    chg = w.get("change_pct", 0)
+    sign = "+" if chg >= 0 else ""
+    status = "" if w.get("enabled") else " [已暂停]"
+    print(f"  {sym} {w['name']}{status}: 现价{curr}{price:.2f} ({sign}{chg:.2f}%)")
+
+    sym_alerts = alert_map.get(sym, [])
+    if sym_alerts:
+        for a in sym_alerts:
+            parts = []
+            label = a.get("label") or ""
+            amount = a.get("amount") or ""
+            if a.get("target_buy"):  parts.append(f"买入{curr}{a['target_buy']}")
+            if a.get("target_sell"): parts.append(f"止盈{curr}{a['target_sell']}")
+            if a.get("stop_loss"):   parts.append(f"止损{curr}{a['stop_loss']}")
+            tag = f" [{label}]" if label else ""
+            amt = f" {amount}" if amount else ""
+            enabled = "" if a.get("enabled") else " ⏸"
+            print(f"    {'●' if a.get('is_primary') else '○'}{tag}{enabled}  {'  '.join(parts)}{amt}")
+    else:
+        parts = []
+        if w.get("target_buy"):  parts.append(f"买入{curr}{w['target_buy']}")
+        if w.get("target_sell"): parts.append(f"止盈{curr}{w['target_sell']}")
+        if w.get("stop_loss"):   parts.append(f"止损{curr}{w['stop_loss']}")
+        if parts:
+            print(f"    ● {'  '.join(parts)}")
+PYEOF
+}
+
+cmd_watch_add() {
+    local symbol=$1
+    local name=$2
+    
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio watch-add <symbol> [name] [--buy price] [--sell price] [--stop price]"
+        exit 1
+    fi
+    
+    shift; shift 2>/dev/null
+    local target_buy="null"
+    local target_sell="null"
+    local stop_loss="null"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --buy) target_buy="$2"; shift 2;;
+            --sell) target_sell="$2"; shift 2;;
+            --stop) stop_loss="$2"; shift 2;;
+            *) shift;;
+        esac
+    done
+    
+    local resp
+    resp=$(api_post "/api/watchlist" "{
+        \"symbol\": \"$symbol\",
+        \"name\": \"${name:-$symbol}\",
+        \"target_buy\": $target_buy,
+        \"target_sell\": $target_sell,
+        \"stop_loss\": $stop_loss,
+        \"enabled\": true
+    }")
+    python3 -c "import sys,json; d=json.loads(sys.argv[1]); print('✅ 已添加监控' if 'id' in d else f'❌ 失败: {d}')" "$resp"
+}
+
+cmd_watch_delete() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio watch-delete <symbol>"
+        exit 1
+    fi
+    symbol=$(echo "$symbol" | tr '[:lower:]' '[:upper:]')
+    echo -e "${YELLOW}删除监控: $symbol${NC}"
+    api_delete_no_body "/api/watchlist/symbol/$symbol"
+}
+
+cmd_watch_update() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio watch-update <symbol> [--buy p] [--sell p] [--stop p] [--name n] [--enable|--disable]"
+        exit 1
+    fi
+    symbol=$(echo "$symbol" | tr '[:lower:]' '[:upper:]')
+    shift
+
+    local json_parts=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --buy) json_parts+=("\"target_buy\": $2"); shift 2;;
+            --sell) json_parts+=("\"target_sell\": $2"); shift 2;;
+            --stop) json_parts+=("\"stop_loss\": $2"); shift 2;;
+            --name) json_parts+=("\"name\": \"$2\""); shift 2;;
+            --enable) json_parts+=("\"enabled\": true"); shift;;
+            --disable) json_parts+=("\"enabled\": false"); shift;;
+            --clear-buy) json_parts+=("\"target_buy\": null"); shift;;
+            --clear-sell) json_parts+=("\"target_sell\": null"); shift;;
+            --clear-stop) json_parts+=("\"stop_loss\": null"); shift;;
+            *) echo "Unknown option: $1"; exit 1;;
+        esac
+    done
+
+    if [[ ${#json_parts[@]} -eq 0 ]]; then
+        echo "Error: At least one option required"
+        exit 1
+    fi
+
+    local json_body="{"; local first=true
+    for part in "${json_parts[@]}"; do
+        if $first; then json_body+="$part"; first=false
+        else json_body+=", $part"; fi
+    done
+    json_body+="}"
+
+    local resp
+    resp=$(api_put "/api/watchlist/$symbol" "$json_body")
+    python3 -c "import sys,json; d=json.loads(sys.argv[1]); print('✅ 已更新' if 'id' in d else f'❌ 失败: {d}')" "$resp"
+}
+
+cmd_alerts() {
+    local data
+    data=$(api_get "/api/alerts/history")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+alerts = d if isinstance(d, list) else d.get("items", [])
+print("=== 告警历史（最近10条）===")
+for a in alerts[:10]:
+    status = "✅" if a.get("sent") else "❌"
+    print(f"  {status} {a['symbol']} {a.get('alert_type','')} ${a.get('price',0):.2f}  {a.get('triggered_at','')[:16]}")
+PYEOF
+}
+
+cmd_transactions() {
+    local data
+    data=$(api_get "/api/transactions")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+txs = d if isinstance(d, list) else d.get("items", [])
+print("=== 交易记录（最近10条）===")
+for t in txs[:10]:
+    action = "买入" if t.get("action") == "buy" else "卖出"
+    print(f"  {t.get('date','')[:10]} {action} {t['symbol']} {t['shares']}股 @ ${t['price']:.2f}  备注: {t.get('notes','')}")
+PYEOF
+}
+
+cmd_price() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio price <symbol>"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/price/$symbol")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+curr = "¥" if d.get("currency") == "CNY" else "$"
+chg = d.get("change_pct", 0)
+sign = "+" if chg >= 0 else ""
+print(f"=== {d['symbol']} {d.get('name','')} ===")
+print(f"现价:   {curr}{d['price']:.2f}  ({sign}{chg:.2f}%)")
+print(f"昨收:   {curr}{d.get('previous_close',0):.2f}")
+print(f"今日:   开{curr}{d.get('open',0):.2f}  高{curr}{d.get('high',0):.2f}  低{curr}{d.get('low',0):.2f}")
+mc = d.get("market_cap", 0)
+if mc:
+    print(f"市值:   ${mc/1e9:.1f}B")
+print(f"来源:   {d.get('source','')}")
+PYEOF
+}
+
+cmd_ratios() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio ratios <symbol>"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/ratios/$symbol")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+def fmt(v, suffix=""):
+    return f"{v:.2f}{suffix}" if v is not None else "N/A"
+print(f"=== {d['symbol']} 估值指标 ===")
+print(f"PE（TTM）:    {fmt(d.get('pe_ratio'))}x")
+print(f"PE（Forward）:{fmt(d.get('forward_pe'))}x")
+print(f"PB:           {fmt(d.get('pb_ratio'))}x")
+print(f"PS:           {fmt(d.get('ps_ratio'))}x")
+print(f"EPS（TTM）:   ${fmt(d.get('eps'))}")
+print(f"EPS（Forward）:${fmt(d.get('forward_eps'))}")
+print(f"股息率:       {fmt(d.get('dividend_yield'))}%")
+print(f"净利率:       {fmt((d.get('profit_margin') or 0)*100)}%")
+print(f"ROE:          {fmt((d.get('return_on_equity') or 0)*100)}%")
+mc = d.get("market_cap", 0)
+if mc:
+    print(f"市值:         ${mc/1e9:.1f}B")
+print(f"来源:         {d.get('source','')}")
+PYEOF
+}
+
+cmd_income() {
+    local symbol=$1
+    local period="${2:-quarterly}"
+    local limit="${3:-4}"
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio income <symbol> [quarterly|annual] [limit]"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/income/$symbol?period=$period&limit=$limit")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+stmts = d.get("statements", [])
+print(f"=== {d['symbol']} 财报 ({d.get('period','')}) ===")
+for s in stmts:
+    date = s.get("date","")[:7]
+    rev = s.get("revenue", 0) or 0
+    ni = s.get("net_income", 0) or 0
+    eps = s.get("eps", 0) or 0
+    margin = (ni/rev*100) if rev else 0
+    print(f"  {date}  营收 ${rev/1e9:.2f}B  净利 ${ni/1e9:.2f}B  EPS ${eps:.2f}  净利率 {margin:.1f}%")
+print(f"来源: {d.get('source','')}")
+PYEOF
+}
+
+cmd_estimates() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio estimates <symbol>"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/estimates/$symbol")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+print(f"=== {d['symbol']} 分析师预期 ===")
+tp = d.get("target_price", {})
+if tp:
+    print(f"目标价:  均值 ${tp.get('mean',0):.2f}  高 ${tp.get('high',0):.2f}  低 ${tp.get('low',0):.2f}  ({tp.get('analyst_count',0)}位分析师)")
+rec = d.get("recommendation", {})
+if rec:
+    print(f"评级:    {rec.get('mean_rating','N/A')}  ({rec.get('strong_buy',0)}强买/{rec.get('buy',0)}买/{rec.get('hold',0)}持有/{rec.get('sell',0)}卖)")
+eps_e = d.get("earnings_estimates") or d.get("eps_estimates", [])
+if eps_e:
+    print("EPS预期:")
+    for e in eps_e[:4]:
+        avg = e.get("avg") or e.get("mean") or 0
+        actual = e.get("actual") or e.get("actualEps")
+        growth = e.get("growth")
+        growth_str = f"  YoY {growth*100:+.1f}%" if growth is not None else ""
+        print(f"  {e.get('period','')}: 均值 ${avg:.2f}  (实际 {f'${actual:.2f}' if actual else 'N/A'}){growth_str}")
+rev_e = d.get("revenue_estimates", [])
+if rev_e:
+    print("营收预期:")
+    for e in rev_e[:4]:
+        avg = e.get("avg") or e.get("mean") or 0
+        print(f"  {e.get('period','')}: ${avg/1e9:.2f}B")
+print(f"来源: {d.get('source','')}")
+PYEOF
+}
+
+cmd_news() {
+    local symbol=$1
+    local limit="${2:-5}"
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio news <symbol> [limit]"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/news/$symbol?limit=$limit")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+news = d.get("news", [])
+print(f"=== {d['symbol']} 最新新闻 ===")
+for n in news:
+    date = n.get("published_at","")[:10]
+    src = n.get("source","")
+    title = n.get("title","")
+    print(f"  [{date}] {src}")
+    print(f"  {title}")
+    desc = n.get("description","")
+    if desc:
+        print(f"  {desc[:120]}...")
+    print()
+PYEOF
+}
+
+cmd_balance() {
+    local symbol=$1
+    local period="${2:-quarterly}"
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio balance <symbol> [quarterly|annual]"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/balance/$symbol?period=$period&limit=4")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+print(f"=== {d['symbol']} 资产负债表 ({d.get('period','')}) ===")
+for r in d.get("data", []):
+    ta = r.get("total_assets") or 0
+    tl = r.get("total_liabilities") or 0
+    eq = r.get("shareholders_equity") or 0
+    cash = r.get("cash") or 0
+    debt = r.get("total_debt") or 0
+    bvps = r.get("book_value_per_share")
+    print(f"  {r['date']}")
+    print(f"    总资产: ${ta/1e9:.2f}B  总负债: ${tl/1e9:.2f}B  净资产: ${eq/1e9:.2f}B")
+    print(f"    现金: ${cash/1e9:.2f}B  总债务: ${debt/1e9:.2f}B  每股净资产: {'${:.2f}'.format(bvps) if bvps else 'N/A'}")
+PYEOF
+}
+
+cmd_cashflow() {
+    local symbol=$1
+    local period="${2:-quarterly}"
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio cashflow <symbol> [quarterly|annual]"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/cashflow/$symbol?period=$period&limit=4")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+print(f"=== {d['symbol']} 现金流量表 ({d.get('period','')}) ===")
+for r in d.get("data", []):
+    ocf = r.get("operating_cash_flow") or 0
+    capex = r.get("capital_expenditure") or 0
+    fcf = r.get("free_cash_flow") or 0
+    ni = r.get("net_income") or 0
+    print(f"  {r['date']}")
+    print(f"    经营现金流: ${ocf/1e9:.2f}B  资本支出: ${capex/1e9:.2f}B  自由现金流: ${fcf/1e9:.2f}B  净利润: ${ni/1e9:.2f}B")
+PYEOF
+}
+
+cmd_company() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio company <symbol>"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/company/$symbol")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+print(f"=== {d['symbol']} {d.get('name','')} ===")
+print(f"行业: {d.get('sector','')} / {d.get('industry','')}")
+print(f"国家: {d.get('country','')}  交易所: {d.get('exchange','')}")
+emp = d.get("employees")
+if emp:
+    print(f"员工: {emp:,}人")
+web = d.get("website","")
+if web:
+    print(f"官网: {web}")
+desc = d.get("description","")
+if desc:
+    print(f"\n{desc}")
+PYEOF
+}
+
+cmd_insiders() {
+    local symbol=$1
+    local limit="${2:-10}"
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio insiders <symbol> [limit]"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/insiders/$symbol?limit=$limit")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+print(f"=== {d['symbol']} 内幕交易 ===")
+for r in d.get("data", []):
+    val = r.get("value")
+    val_str = f"${val:,.0f}" if val else "N/A"
+    shares = r.get("shares")
+    sh_str = f"{shares:,.0f}股" if shares else "N/A"
+    print(f"  {r.get('date','')}  {r.get('name','')} ({r.get('title','')})")
+    print(f"    {r.get('transaction_type','')}  {sh_str}  {val_str}")
+PYEOF
+}
+
+cmd_segments() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio segments <symbol>"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/segments/$symbol")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}: {d.get('symbol','')}")
+    sys.exit(0)
+print(f"=== {d['symbol']} 营收拆分 ===")
+for key in ("revenue_by_product", "revenue_by_geography"):
+    seg = d.get(key)
+    if not seg:
+        continue
+    label = "按产品" if "product" in key else "按地区"
+    print(f"\n{label}:")
+    # Get all time periods from first segment
+    periods = []
+    for v in seg.values():
+        periods = list(v.keys())
+        break
+    periods = sorted(periods, reverse=True)[:2]
+    for period in periods:
+        print(f"  {period}:")
+        items = [(k, v.get(period)) for k, v in seg.items() if v.get(period) is not None]
+        items.sort(key=lambda x: (x[1] or 0), reverse=True)
+        for name, val in items[:10]:
+            if val:
+                print(f"    {name}: ${val/1e9:.2f}B")
+PYEOF
+}
+
+cmd_crypto() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio crypto <symbol>  (e.g. BTC-USD, ETH-USD)"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/crypto/$symbol")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+curr = d.get("currency","USD")
+chg = d.get("change_pct") or 0
+sign = "+" if chg >= 0 else ""
+print(f"=== {d['symbol']} ===")
+print(f"现价:  {curr} {d.get('price',0):,.2f}  ({sign}{chg:.2f}%)")
+print(f"昨收:  {d.get('previous_close',0):,.2f}")
+print(f"今日:  开{d.get('open',0):,.2f}  高{d.get('high',0):,.2f}  低{d.get('low',0):,.2f}")
+vol = d.get("volume")
+if vol:
+    print(f"成交量: {vol:,.0f}")
+mc = d.get("market_cap")
+if mc:
+    print(f"市值:  ${mc/1e9:.1f}B")
+PYEOF
+}
+
+cmd_prices() {
+    local symbol=$1
+    local start="${2:-2025-01-01}"
+    local end="${3:-$(date +%Y-%m-%d)}"
+    local interval="${4:-1d}"
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio prices <symbol> [start] [end] [interval]"
+        echo "  interval: 1d(default)|1wk|1mo|1h"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/market/prices/$symbol?start=$start&end=$end&interval=$interval")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+records = d.get("data", [])
+print(f"=== {d['symbol']} 历史行情 ({d.get('start','')} ~ {d.get('end','')}, {d.get('interval','')}) ===")
+print(f"共 {d.get('count',0)} 条记录")
+print(f"{'日期':<20} {'开盘':>10} {'最高':>10} {'最低':>10} {'收盘':>10} {'成交量':>14}")
+print("-" * 78)
+for r in records[-20:]:  # show last 20
+    print(f"  {r['date'][:10]:<18} {r.get('open',0):>10.2f} {r.get('high',0):>10.2f} {r.get('low',0):>10.2f} {r.get('close',0):>10.2f} {(r.get('volume') or 0):>14,.0f}")
+PYEOF
+}
+
+cmd_macro() {
+    local data
+    data=$(api_get "/api/macro")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+raw = sys.argv[1]
+d = json.loads(raw)
+if isinstance(d, dict) and "error" in d and len(d) <= 2:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+print("=== 宏观市场指标 ===")
+items = d if isinstance(d, list) else d.get("data", d.get("indicators", []))
+if not isinstance(items, list):
+    print(json.dumps(d, indent=2, ensure_ascii=False))
+    sys.exit(0)
+for item in items:
+    if not isinstance(item, dict):
+        continue
+    name = item.get("name") or item.get("short_name") or item.get("symbol", "")
+    price = item.get("price") or item.get("value") or item.get("close")
+    chg_pct = item.get("change_pct") or item.get("pct_change") or 0
+    chg = item.get("change") or 0
+    err = item.get("error")
+    if err:
+        print(f"  {name}: ❌ {err}")
+    elif price is not None:
+        sign = "+" if (chg_pct or 0) >= 0 else ""
+        print(f"  {name:<16} {price:>10}   {sign}{chg_pct:.2f}%")
+    else:
+        print(f"  {name}: N/A")
+PYEOF
+}
+
+cmd_quant() {
+    local symbol=$1
+    if [[ -z "$symbol" ]]; then
+        echo "Usage: portfolio quant <symbol>"
+        exit 1
+    fi
+    local data
+    data=$(api_get "/api/quant/signals/$symbol")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+if "error" in d:
+    print(f"❌ {d['error']}")
+    sys.exit(1)
+sym = d.get("symbol", sys.argv[1] if len(sys.argv) > 1 else "")
+print(f"=== {sym} 量化信号 ===")
+score = d.get("score") or d.get("total_score")
+if score is not None:
+    print(f"综合评分: {score}")
+signal = d.get("signal") or d.get("overall_signal")
+if signal:
+    print(f"信号: {signal}")
+for k, v in d.items():
+    if k not in ("symbol", "score", "total_score", "signal", "overall_signal", "error"):
+        print(f"  {k}: {v}")
+PYEOF
+}
+
+cmd_quant_all() {
+    local data
+    data=$(api_get "/api/quant/signals")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+signals = d if isinstance(d, list) else d.get("signals", d.get("data", []))
+print("=== 全部量化信号 ===")
+if isinstance(signals, list):
+    for s in signals:
+        sym = s.get("symbol","")
+        score = s.get("score") or s.get("total_score") or "N/A"
+        signal = s.get("signal") or s.get("overall_signal") or ""
+        print(f"  {sym:<10} 评分: {score}  {signal}")
+else:
+    print(json.dumps(d, indent=2, ensure_ascii=False))
+PYEOF
+}
+
+cmd_earnings() {
+    local data
+    data=$(api_get "/api/earnings/upcoming")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+earnings = d if isinstance(d, list) else d.get("earnings", d.get("data", []))
+print("=== 财报日历（未来30天）===")
+if isinstance(earnings, list):
+    for e in earnings:
+        sym = e.get("symbol","")
+        date = (e.get("report_date") or e.get("date") or e.get("earnings_date") or "")[:10]
+        eps_est = e.get("estimate_eps") or e.get("eps_estimate") or e.get("estimated_eps") or "N/A"
+        rev_est = e.get("estimate_revenue") or e.get("revenue_estimate") or e.get("estimated_revenue")
+        days = e.get("days_until")
+        days_str = f"  ({days}天后)" if days is not None and days >= 0 else "  (已发布)"
+        rev_str = f"  营收预期: ${rev_est/1e9:.2f}B" if rev_est else ""
+        print(f"  {date}  {sym:<10}  EPS预期: {eps_est}{rev_str}{days_str}")
+else:
+    print(json.dumps(d, indent=2, ensure_ascii=False))
+PYEOF
+}
+
+cmd_earnings_recent() {
+    local data
+    data=$(api_get "/api/earnings/recent")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+earnings = d if isinstance(d, list) else d.get("earnings", d.get("data", []))
+print("=== 最近已发布财报 ===")
+if isinstance(earnings, list):
+    for e in earnings:
+        sym = e.get("symbol","")
+        date = e.get("date","")[:10] if e.get("date") else e.get("earnings_date","")[:10]
+        eps_act = e.get("eps_actual") or e.get("actual_eps") or "N/A"
+        eps_est = e.get("eps_estimate") or e.get("estimated_eps") or "N/A"
+        surprise = e.get("eps_surprise_pct") or e.get("surprise_pct")
+        sur_str = f"  超预期: {surprise:+.1f}%" if surprise is not None else ""
+        print(f"  {date}  {sym:<10}  EPS实际: {eps_act}  预期: {eps_est}{sur_str}")
+else:
+    print(json.dumps(d, indent=2, ensure_ascii=False))
+PYEOF
+}
+
+cmd_snapshot() {
+    local data
+    data=$(api_get "/api/snapshots/history")
+    python3 - "$data" << 'PYEOF'
+import sys, json
+d = json.loads(sys.argv[1])
+snapshots = d if isinstance(d, list) else d.get("snapshots", d.get("data", []))
+print("=== 历史资产快照 ===")
+if isinstance(snapshots, list):
+    print(f"{'日期':<12} {'总资产(USD)':>16} {'股票市值':>14} {'现金':>12}")
+    print("-" * 58)
+    for s in snapshots[-20:]:
+        date = s.get("date","")[:10] if s.get("date") else s.get("snapshot_date","")[:10]
+        total = s.get("total_assets_usd") or s.get("total_assets") or 0
+        stocks = s.get("stock_value_usd") or s.get("stock_value") or 0
+        cash = s.get("cash_usd") or s.get("cash") or 0
+        print(f"  {date:<10}  ${total:>14,.0f}  ${stocks:>12,.0f}  ${cash:>10,.0f}")
+else:
+    print(json.dumps(d, indent=2, ensure_ascii=False))
+PYEOF
+}
+
+cmd_help() {
+    cat << EOF
+股票投资组合管理 CLI
+
+Usage: portfolio [command] [options]
+
+持仓管理:
+  summary                                              资产总览
+  holdings                                             持仓明细
+  cash                                                 现金账户
+  buy <symbol> <shares> <price> [note]                 买入
+  sell <symbol> <shares> <price> [note]                卖出
+  transactions                                         交易记录
+
+监控预警:
+  watch                                                监控列表
+  watch-add <symbol> [name] [--buy p] [--sell p] [--stop p]   添加监控
+  watch-update <symbol> [--buy p] [--sell p] [--stop p]       修改档位
+  watch-delete <symbol>                                        删除监控
+  alerts                                               告警历史
+
+市场数据（基础）:
+  price <symbol>                                       实时行情（美股+A股）
+  ratios <symbol>                                      估值指标（PE/PB/EPS/ROE）
+  income <symbol> [quarterly|annual] [limit]           财报数据（损益表）
+  estimates <symbol>                                   分析师预期&目标价
+  news <symbol> [limit]                                最新新闻
+
+市场数据（扩展）:
+  balance <symbol> [quarterly|annual]                  资产负债表
+  cashflow <symbol> [quarterly|annual]                 现金流量表
+  company <symbol>                                     公司基本信息
+  insiders <symbol> [limit]                            内幕交易记录
+  segments <symbol>                                    营收拆分（按产品/地区）
+  crypto <symbol>                                      加密货币价格 (BTC-USD/ETH-USD)
+  prices <symbol> [start] [end] [interval]             历史OHLCV数据
+
+宏观与量化:
+  macro                                                宏观指标（VIX/美债/DXY/指数）
+  quant <symbol>                                       量化信号评分
+  quant-all                                            全部持仓量化信号
+  earnings                                             财报日历（未来30天）
+  earnings-recent                                      最近已发布财报
+  snapshot                                             历史资产快照
+
+  help                                                 显示帮助
+
+Environment:
+  PORTFOLIO_API_URL    API地址 (默认: http://localhost:8802)
+EOF
+}
+
+# Main
+case "${1:-help}" in
+    summary)         cmd_summary ;;
+    holdings)        cmd_holdings ;;
+    cash)            cmd_cash ;;
+    buy)             shift; cmd_buy "$@" ;;
+    sell)            shift; cmd_sell "$@" ;;
+    transactions)    cmd_transactions ;;
+    watch)           cmd_watch ;;
+    watch-add)       shift; cmd_watch_add "$@" ;;
+    watch-delete|watch-rm) shift; cmd_watch_delete "$@" ;;
+    watch-update)    shift; cmd_watch_update "$@" ;;
+    alerts)          cmd_alerts ;;
+    price)           shift; cmd_price "$@" ;;
+    ratios)          shift; cmd_ratios "$@" ;;
+    income)          shift; cmd_income "$@" ;;
+    estimates)       shift; cmd_estimates "$@" ;;
+    news)            shift; cmd_news "$@" ;;
+    balance)         shift; cmd_balance "$@" ;;
+    cashflow)        shift; cmd_cashflow "$@" ;;
+    company)         shift; cmd_company "$@" ;;
+    insiders)        shift; cmd_insiders "$@" ;;
+    segments)        shift; cmd_segments "$@" ;;
+    crypto)          shift; cmd_crypto "$@" ;;
+    prices)          shift; cmd_prices "$@" ;;
+    macro)           cmd_macro ;;
+    quant)           shift; cmd_quant "$@" ;;
+    quant-all)       cmd_quant_all ;;
+    earnings)        cmd_earnings ;;
+    earnings-recent) cmd_earnings_recent ;;
+    snapshot)        cmd_snapshot ;;
+    help|--help|-h)  cmd_help ;;
+    *) echo "Unknown command: $1"; cmd_help; exit 1 ;;
+esac

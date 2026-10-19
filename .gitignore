@@ -1,0 +1,33 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 真实配置（含 Telegram Token 等敏感信息）
+config.yaml
+
+# 数据文件
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.log
+data/*.png
+data/.server.pid
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend/dist-backup*/
+
+# 环境变量
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
