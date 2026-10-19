@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 
 import requests
 
-from ..symbols import sina_code
+from ..symbols import hk_secid, sina_code
 from .eastmoney import KNOWN_SECIDS, fetch_secids
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,9 @@ def _fetch_yahoo(symbol: str) -> Dict[str, Any]:
 
 def fetch_price(symbol: str) -> Dict[str, Any]:
     symbol = symbol.strip()
+    hong_kong = hk_secid(symbol)
+    if hong_kong:
+        return fetch_secids([(symbol.upper(), hong_kong)]).get(symbol.upper(), {"symbol": symbol, "error": "no quote"})
     known = KNOWN_SECIDS.get(symbol.upper())
     if known:
         return fetch_secids([(symbol.upper(), known)]).get(symbol.upper(), {"symbol": symbol, "error": "no quote"})
@@ -236,7 +239,7 @@ def fetch_prices_batch(symbols: List[str], secids: Dict[str, str] | None = None)
     cn = []
     other = []
     for symbol in symbols:
-        secid = supplied.get(symbol) or KNOWN_SECIDS.get(symbol)
+        secid = supplied.get(symbol) or KNOWN_SECIDS.get(symbol) or hk_secid(symbol)
         if sina_code(symbol):
             cn.append(symbol)
         elif secid:

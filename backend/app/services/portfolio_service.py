@@ -73,6 +73,9 @@ def get_holdings(db: Session) -> PortfolioOut:
         if currency == "CNY":
             market_value_usd = market_value / usd_to_cny
             unrealized_pnl_usd = unrealized_pnl / usd_to_cny
+        elif currency == "HKD":
+            market_value_usd = market_value / 7.8
+            unrealized_pnl_usd = unrealized_pnl / 7.8
         else:
             market_value_usd = market_value
             unrealized_pnl_usd = unrealized_pnl

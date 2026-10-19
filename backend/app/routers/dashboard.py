@@ -60,6 +60,8 @@ def dashboard(db: Session = Depends(get_db)):
             cached = price_map.get(h.symbol)
             if cached and cached.currency == "CNY":
                 stock_value_cny += h.market_value
+            elif cached and cached.currency == "HKD":
+                stock_value_usd += h.market_value / 7.8
             else:
                 stock_value_usd += h.market_value
 

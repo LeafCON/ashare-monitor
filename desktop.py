@@ -24,7 +24,7 @@ HOST = "127.0.0.1"
 PORT = 8802
 
 
-def _message(text: str, title: str = "A股监测台") -> None:
+def _message(text: str, title: str = "股票监测台") -> None:
     ctypes.windll.user32.MessageBoxW(0, text, title, 0x10)
 
 
@@ -87,7 +87,7 @@ def main() -> None:
         import webview
 
         window = webview.create_window(
-            "A股行情监测台",
+            "A股 / 港股 / 美股行情监测台",
             f"http://{HOST}:{PORT}/",
             width=1360,
             height=860,

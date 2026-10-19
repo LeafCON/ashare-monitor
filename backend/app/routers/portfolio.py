@@ -55,7 +55,7 @@ def _cache_price(db: Session, symbol: str, name: str) -> None:
         change=quote.get("change"),
         change_pct=quote.get("change_pct"),
         volume=quote.get("volume"),
-        currency=quote.get("currency") or ("CNY" if symbol.endswith((".SS", ".SZ", ".BJ")) else "USD"),
+        currency=quote.get("currency") or ("CNY" if symbol.endswith((".SS", ".SZ", ".BJ")) else "HKD" if symbol.endswith(".HK") else "USD"),
         updated_at=utcnow(),
     ))
 
@@ -72,10 +72,8 @@ def set_holding(payload: HoldingInput, db: Session = Depends(get_db)):
     if payload.shares < 0 or payload.cost_price < 0:
         raise HTTPException(status_code=400, detail="股数和成本价不能为负数")
     symbol, market = normalize_symbol(payload.symbol, payload.market)
-    if payload.market in {"cn", "us"} and market != "cn":
-        market = payload.market
     name = (payload.name or "").strip()
-    secid = KNOWN_SECIDS.get(symbol)
+    secid = KNOWN_SECIDS.get(symbol) or (f"116.{symbol[:-3]}" if symbol.endswith(".HK") else None)
     db.query(Transaction).filter(Transaction.symbol == symbol).delete()
     if payload.shares > 0:
         db.add(Transaction(

@@ -137,7 +137,7 @@ def create_alert(payload: AlertSettingCreate, db: Session = Depends(get_db)):
     For sub-level alerts (is_primary=False), a new record is always created.
     """
     symbol, inferred = normalize_symbol(payload.symbol, payload.market.value)
-    market = MarketType.cn if inferred == "cn" else payload.market
+    market = MarketType(inferred) if inferred in {"cn", "hk"} else payload.market
 
     if payload.is_primary:
         existing = db.query(AlertSetting).filter(

@@ -169,6 +169,24 @@ def seed_default_alerts():
                 enabled=True,
                 is_primary=True,
             ))
+        from .services.eastmoney import HK_WATCHLIST
+        for item in HK_WATCHLIST:
+            exists = db.query(AlertSetting).filter(
+                AlertSetting.symbol == item["symbol"],
+                AlertSetting.is_primary == True,  # noqa: E712
+            ).first()
+            if exists:
+                if not exists.secid:
+                    exists.secid = item["secid"]
+                continue
+            db.add(AlertSetting(
+                symbol=item["symbol"],
+                name=item["name"],
+                market=MarketType(item["market"]),
+                secid=item["secid"],
+                enabled=True,
+                is_primary=True,
+            ))
         db.commit()
     finally:
         db.close()

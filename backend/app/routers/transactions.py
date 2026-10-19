@@ -30,6 +30,8 @@ def get_currency_for_symbol(symbol: str, db: Session) -> str:
     # Fallback: CN symbols typically end with .SS or .SZ
     if symbol.endswith(".SS") or symbol.endswith(".SZ") or symbol.endswith(".BJ"):
         return "CNY"
+    if symbol.endswith(".HK"):
+        return "HKD"
     return "USD"
 
 

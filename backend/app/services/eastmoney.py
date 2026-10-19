@@ -36,6 +36,12 @@ INDEX_WATCHLIST = [
     {"symbol": "DXY", "name": "美元指数", "market": "us", "secid": "100.UDI"},
 ]
 
+HK_WATCHLIST = [
+    {"symbol": "00700.HK", "name": "腾讯控股", "market": "hk", "secid": "116.00700"},
+    {"symbol": "09988.HK", "name": "阿里巴巴-W", "market": "hk", "secid": "116.09988"},
+    {"symbol": "01810.HK", "name": "小米集团-W", "market": "hk", "secid": "116.01810"},
+]
+
 
 def fetch_secids(pairs: list[tuple[str, str]]) -> dict[str, dict[str, Any]]:
     """pairs are (symbol, secid). Returns quotes keyed by symbol."""
@@ -93,7 +99,7 @@ def fetch_secids(pairs: list[tuple[str, str]]) -> dict[str, dict[str, Any]]:
             "change": change_f,
             "change_pct": pct_f,
             "volume": None,
-            "currency": "USD",
+            "currency": "HKD" if symbol.upper().endswith(".HK") else "USD",
         }
     for symbol, _secid in pairs:
         found.setdefault(symbol, {"symbol": symbol, "error": "no quote"})
@@ -127,6 +133,9 @@ def search_symbols(query: str, limit: int = 8) -> list[dict[str, str]]:
             continue
         if quote_id.startswith(("0.", "1.")):
             symbol, market = normalize_symbol(code, "cn")
+        elif quote_id.startswith("116."):
+            code_hk = code.zfill(5) if code.isdigit() else code
+            symbol, market = f"{code_hk}.HK", "hk"
         elif quote_id.startswith(("100.", "105.", "106.", "107.")):
             symbol, market = code.upper(), "us"
         else:

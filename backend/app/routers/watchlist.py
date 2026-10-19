@@ -109,6 +109,8 @@ def add_to_watchlist(payload: WatchlistAddRequest, db: Session = Depends(get_db)
     symbol, inferred = normalize_symbol(payload.symbol, payload.market.value if payload.market else "us")
     if inferred == "cn":
         payload.market = MarketType.cn
+    elif inferred == "hk":
+        payload.market = MarketType.hk
     existing = db.query(AlertSetting).filter(
         AlertSetting.symbol == symbol,
         AlertSetting.is_primary == True,
@@ -161,7 +163,7 @@ def add_to_watchlist(payload: WatchlistAddRequest, db: Session = Depends(get_db)
             change=quote.get("change"),
             change_pct=quote.get("change_pct"),
             volume=quote.get("volume"),
-            currency=quote.get("currency") or ("CNY" if alert.market == MarketType.cn else "USD"),
+            currency=quote.get("currency") or ("CNY" if alert.market == MarketType.cn else "HKD" if alert.market == MarketType.hk else "USD"),
             updated_at=datetime.now(timezone.utc),
         ))
         db.commit()

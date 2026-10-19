@@ -204,7 +204,7 @@ let holdingPnlInstance = null
 
 const alertGroupsByMarket = computed(() => {
   const groups = alertGroupsRaw.value
-  const markets = [{ key: 'us', label: '美股', stocks: [] }, { key: 'cn', label: 'A股', stocks: [] }]
+  const markets = [{ key: 'us', label: '美股', stocks: [] }, { key: 'hk', label: '港股', stocks: [] }, { key: 'cn', label: 'A股', stocks: [] }]
   const mm = {}
   for (const m of markets) mm[m.key] = m
   for (const g of groups) { const k = g.market || 'us'; (mm[k] || mm['us']).stocks.push(g) }
@@ -295,7 +295,8 @@ async function saveHolding() {
 }
 function editHolding(h) {
   const cn = h.symbol.endsWith('.SS') || h.symbol.endsWith('.SZ') || h.symbol.endsWith('.BJ')
-  holdingForm.value = { symbol: h.symbol, name: h.name, shares: h.shares, cost_price: Number(h.avg_cost.toFixed(4)), market: cn ? 'cn' : 'us' }
+  const hk = h.symbol.endsWith('.HK')
+  holdingForm.value = { symbol: h.symbol, name: h.name, shares: h.shares, cost_price: Number(h.avg_cost.toFixed(4)), market: hk ? 'hk' : cn ? 'cn' : 'us' }
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 async function removeHolding(symbol) {
@@ -582,10 +583,17 @@ const txStats = computed(() => {
   return { totalBuy, totalSell, netIn: totalBuy - totalSell, totalFee, count: filteredTx.value.length }
 })
 const filteredHistory = computed(() => { const f = historyFilter.value.toUpperCase(); if (!f) return alertHistory.value; return alertHistory.value.filter(a => a.symbol.includes(f)) })
-const usStockPrices = computed(() => prices.value.filter(p => p.currency !== 'CNY'))
+const usStockPrices = computed(() => prices.value.filter(p => p.currency !== 'CNY' && p.currency !== 'HKD'))
+const hkStockPrices = computed(() => prices.value.filter(p => p.currency === 'HKD'))
 const cnStockPrices = computed(() => prices.value.filter(p => p.currency === 'CNY'))
-const usHoldings = computed(() => { if (!portfolio.value?.holdings) return []; const cn = new Set(cnStockPrices.value.map(p => p.symbol)); return portfolio.value.holdings.filter(h => !cn.has(h.symbol)) })
-const cnHoldings = computed(() => { if (!portfolio.value?.holdings) return []; const cn = new Set(cnStockPrices.value.map(p => p.symbol)); return portfolio.value.holdings.filter(h => cn.has(h.symbol)) })
+function symbolMarket(symbol) {
+  if (symbol.endsWith('.HK')) return 'hk'
+  if (symbol.endsWith('.SS') || symbol.endsWith('.SZ') || symbol.endsWith('.BJ')) return 'cn'
+  return 'us'
+}
+const usHoldings = computed(() => { if (!portfolio.value?.holdings) return []; return portfolio.value.holdings.filter(h => symbolMarket(h.symbol) === 'us') })
+const hkHoldings = computed(() => { if (!portfolio.value?.holdings) return []; return portfolio.value.holdings.filter(h => symbolMarket(h.symbol) === 'hk') })
+const cnHoldings = computed(() => { if (!portfolio.value?.holdings) return []; return portfolio.value.holdings.filter(h => symbolMarket(h.symbol) === 'cn') })
 function getHolding(symbol) { if (!portfolio.value?.holdings) return null; return portfolio.value.holdings.find(h => h.symbol === symbol) }
 
 // Build progress map for portfolio holdings (reuses cardTimelineData logic)
@@ -610,7 +618,7 @@ const holdingBuildProgress = computed(() => {
   return map
 })
 
-function fmtPrice(v, currency) { if (v == null) return '-'; return (currency === 'CNY' ? '¥' : '$') + v.toFixed(2) }
+function fmtPrice(v, currency) { if (v == null) return '-'; const sym = currency === 'CNY' ? '¥' : currency === 'HKD' ? 'HK$' : '$'; return sym + v.toFixed(2) }
 function fmtChange(v) { if (v == null) return '-'; return (v >= 0 ? '+' : '') + v.toFixed(2) }
 function fmtPct(v) { if (v == null) return '-'; return (v >= 0 ? '+' : '') + v.toFixed(2) + '%' }
 function fmtNum(v, decimals = 2) { if (v == null) return '0'; return v.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) }
@@ -651,7 +659,9 @@ function fmtDate(d) { if (!d) return '-'; return new Date(d).toLocaleDateString(
 function fmtTime(d) { if (!d) return '-'; return new Date(d).toLocaleString('zh-CN') }
 function pnlClass(v) { if (v == null || v === 0) return ''; return v > 0 ? 'positive' : 'negative' }
 function alertTypeLabel(t) { return { target_buy: '跌破', target_sell: '突破', price_cross_down: '跌破', price_cross_up: '突破', stop_loss: '止损告警', pct_change: '涨跌幅', big_change: '涨跌幅' }[t] || t }
-function marketCurrSym(m) { return m === 'cn' ? '¥' : '$' }
+function marketCurrSym(m) { return m === 'cn' ? '¥' : m === 'hk' ? 'HK$' : '$' }
+function marketFlag(key) { return { us: '🇺🇸', hk: '🇭🇰', cn: '🇨🇳' }[key] || '' }
+function marketLabel(key) { return { us: '美股', hk: '港股', cn: 'A股' }[key] || key }
 function marketAlertCount(market) { let c = 0; for (const g of market.stocks) { if (g.primary) c++; c += (g.levels || []).length }; return c }
 
 function closeMoreMenu() { moreMenuOpen.value = false }
@@ -710,7 +720,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
 <template>
   <nav class="nav">
-    <div class="nav-brand">📊 Portfolio Monitor</div>
+    <div class="nav-brand">📊 A股 / 港股 / 美股监测台</div>
     <div class="nav-links">
       <a :class="{active: tab==='dashboard'}" @click="switchTab('dashboard')"><span class="nav-icon">📈</span><span class="nav-text">看板</span></a>
       <a :class="{active: tab==='portfolio'}" @click="switchTab('portfolio')"><span class="nav-icon">💰</span><span class="nav-text">持仓</span></a>
@@ -731,9 +741,9 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
   <div v-if="tab==='dashboard'" class="container">
     <div class="page-header"><h2>📈 实时监控看板</h2><button class="btn-outline btn-sm" @click="loadDashboard();loadMacro()">🔄 刷新</button></div>
     <div class="card" style="margin-bottom:16px">
-      <div class="form-group"><label>搜索股票并加入自选</label><input v-model="stockQuery" @input="onStockQuery" placeholder="代码或名称，如 600519、茅台、AAPL"></div>
+      <div class="form-group"><label>搜索股票并加入自选</label><input v-model="stockQuery" @input="onStockQuery" placeholder="代码或名称，如 600519、00700、腾讯、AAPL"></div>
       <div v-for="item in searchResults" :key="item.symbol" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border)">
-        <span><b class="mono">{{ item.symbol }}</b> {{ item.name }} <small>{{ item.market === 'cn' ? 'A股' : '美股' }}</small></span>
+        <span><b class="mono">{{ item.symbol }}</b> {{ item.name }} <small>{{ marketLabel(item.market) }}</small></span>
         <button type="button" class="btn-primary btn-sm" @click="addSearched(item)">添加</button>
       </div>
     </div>
@@ -780,6 +790,19 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
           </div>
         </div>
         <div v-if="usStockPrices.length===0" class="empty">暂无美股数据</div>
+        <div class="card-divider"></div>
+        <div class="card-header" style="margin-top:8px"><h3>🇭🇰 港股实时价格</h3><span class="badge">{{ hkStockPrices.length }}</span></div>
+        <table class="table"><thead><tr><th>代码</th><th>名称</th><th>价格</th><th>涨跌</th><th>涨跌幅</th><th></th></tr></thead><tbody><tr v-for="p in hkStockPrices" :key="p.symbol"><td class="mono stock-code">{{ p.symbol }}</td><td>{{ p.name }}</td><td class="mono">{{ fmtPrice(p.price, p.currency) }}</td><td :class="pnlClass(p.change)">{{ fmtChange(p.change) }}</td><td><span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span></td><td><button class="btn-chart" @click="openChartModal(p.symbol, p.currency)" title="查看K线">📈</button></td></tr></tbody></table>
+        <div class="mobile-card-list">
+          <div v-for="p in hkStockPrices" :key="'m-hk-'+p.symbol" class="mobile-stock-card">
+            <div class="mobile-stock-card-header">
+              <div><span class="stock-symbol-lg">{{ p.symbol }}</span><span class="stock-name-sm">{{ p.name }}</span></div>
+              <span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span>
+            </div>
+            <div class="mobile-stock-card-row"><span class="label">价格</span><span class="mobile-stock-card-price" :class="pnlClass(p.change)">{{ fmtPrice(p.price, p.currency) }}</span></div>
+          </div>
+        </div>
+        <div v-if="hkStockPrices.length===0" class="empty">暂无港股数据</div>
         <div class="card-divider"></div>
         <div class="card-header" style="margin-top:8px"><h3>🇨🇳 A股实时价格</h3><span class="badge">{{ cnStockPrices.length }}</span></div>
         <!-- Desktop table -->
@@ -833,9 +856,9 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
     <div class="page-header"><h2>💰 持仓管理</h2><button class="btn-outline btn-sm" @click="loadPortfolio();loadDashboard()">🔄 刷新</button></div>
     <div class="card form-card" style="margin-bottom:16px">
       <form @submit.prevent="saveHolding" class="form-grid">
-        <div class="form-group"><label>代码</label><input v-model="holdingForm.symbol" placeholder="600519 或 AAPL" required></div>
+        <div class="form-group"><label>代码</label><input v-model="holdingForm.symbol" placeholder="600519、00700 或 AAPL" required></div>
         <div class="form-group"><label>名称</label><input v-model="holdingForm.name" placeholder="贵州茅台"></div>
-        <div class="form-group"><label>市场</label><select v-model="holdingForm.market"><option value="cn">A股</option><option value="us">美股</option></select></div>
+        <div class="form-group"><label>市场</label><select v-model="holdingForm.market"><option value="cn">A股</option><option value="hk">港股</option><option value="us">美股</option></select></div>
         <div class="form-group"><label>股数</label><input v-model.number="holdingForm.shares" type="number" min="0" step="1" required></div>
         <div class="form-group"><label>成本价</label><input v-model.number="holdingForm.cost_price" type="number" min="0" step="0.01" required></div>
         <div class="form-group form-actions"><button type="submit" class="btn-primary">保存持仓</button></div>
@@ -870,6 +893,9 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
             </div>
           </div>
           <div v-if="usHoldings.length===0" class="empty">暂无美股持仓</div></div>
+        <div class="card mt"><div class="card-header"><h3>🇭🇰 港股持仓</h3><span class="badge">{{ hkHoldings.length }}</span></div>
+          <table class="table" v-if="hkHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in hkHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">HK${{ h.avg_cost.toFixed(2) }}</td><td class="mono">HK${{ h.current_price.toFixed(2) }}</td><td class="mono">HK${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">HK${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">修改</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">删除</button></td></tr></tbody></table>
+          <div v-if="hkHoldings.length===0" class="empty">暂无港股持仓</div></div>
         <div class="card mt"><div class="card-header"><h3>🇨🇳 A股持仓</h3><span class="badge">{{ cnHoldings.length }}</span></div>
           <table class="table" v-if="cnHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in cnHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">¥{{ h.avg_cost.toFixed(2) }}</td><td class="mono">¥{{ h.current_price.toFixed(2) }}</td><td class="mono">¥{{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">¥{{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">修改</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">删除</button></td></tr></tbody></table>
           <div class="mobile-card-list" v-if="cnHoldings.length>0">
@@ -925,7 +951,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
       <form @submit.prevent="saveAlert" class="form-grid">
         <div class="form-group"><label>代码</label><input v-model="alertForm.symbol" placeholder="600519" required></div>
         <div class="form-group"><label>名称</label><input v-model="alertForm.name" placeholder="贵州茅台"></div>
-        <div class="form-group"><label>市场</label><select v-model="alertForm.market"><option value="us">美股</option><option value="cn">A股</option></select></div>
+        <div class="form-group"><label>市场</label><select v-model="alertForm.market"><option value="cn">A股</option><option value="hk">港股</option><option value="us">美股</option></select></div>
         <div class="form-group"><label>档位</label><select v-model="alertForm.is_primary"><option :value="true">主档</option><option :value="false">子档</option></select></div>
         <div class="form-group" v-show="!alertForm.is_primary"><label>标签</label><input v-model="alertForm.label" placeholder="子档标签"></div>
         <div class="form-group"><label>跌破价</label><input v-model.number="alertForm.target_buy" type="number" step="0.01"></div>
@@ -983,7 +1009,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
       <!-- Fallback -->
       <div v-if="alertsByPhase.length===0">
         <div v-for="market in alertGroupsByMarket" :key="market.key" v-show="market.stocks.length>0" class="market-block">
-          <div class="market-section-header" @click="toggleCollapse('market:'+market.key)"><span class="collapse-icon">{{ isCollapsed('market:'+market.key) ? '▶' : '▼' }}</span><span class="market-flag">{{ market.key==='us'?'🇺🇸':'🇨🇳' }}</span><span class="market-label">{{ market.key==='us'?'美股':'A股' }}</span><span class="badge">{{ market.stocks.length }} 只 · {{ marketAlertCount(market) }} 档</span></div>
+          <div class="market-section-header" @click="toggleCollapse('market:'+market.key)"><span class="collapse-icon">{{ isCollapsed('market:'+market.key) ? '▶' : '▼' }}</span><span class="market-flag">{{ marketFlag(market.key) }}</span><span class="market-label">{{ marketLabel(market.key) }}</span><span class="badge">{{ market.stocks.length }} 只 · {{ marketAlertCount(market) }} 档</span></div>
           <div v-show="!isCollapsed('market:'+market.key)" class="stock-cards-grid">
             <div v-for="group in market.stocks" :key="group.symbol" class="stock-card">
               <div class="stock-card-header"><div class="stock-card-left"><span class="stock-symbol">{{ group.symbol }}</span><span class="stock-name">{{ group.name }}</span></div><div class="stock-card-right"><span class="stock-price mono" v-if="group.current_price">{{ marketCurrSym(market.key) }}{{ group.current_price.toFixed(2) }}</span><span class="pct-badge" :class="pnlClass(group.change_pct)" v-if="group.change_pct!=null">{{ fmtPct(group.change_pct) }}</span></div></div>

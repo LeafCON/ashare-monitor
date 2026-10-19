@@ -34,6 +34,7 @@ class TradeAction(str, Enum):
 
 class MarketType(str, Enum):
     us = "us"
+    hk = "hk"
     cn = "cn"
 
 

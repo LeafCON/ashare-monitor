@@ -1,6 +1,8 @@
-# A股行情监测台
+# A股 / 港股 / 美股行情监测台
 
-基于 [kedoupi/portfolio-monitor](https://github.com/kedoupi/portfolio-monitor)（MIT）改的本地看板。管理自选和告警，用 Telegram 提醒。信号文案带「请手动确认」。
+[English](README.en.md)
+
+基于 [kedoupi/portfolio-monitor](https://github.com/kedoupi/portfolio-monitor)（MIT）改的本地看板，覆盖 A 股、港股和美股。管理自选和告警，用 Telegram 提醒。信号文案带「请手动确认」。
 
 自动下单是一个开关，**默认关闭**。关闭时只提醒，下单由你自己完成。打开开关也不会点击交易软件，不会保存交易密码。当前没有接入券商，所以即使打开也只记录意向，不会提交委托。
 
@@ -32,7 +34,7 @@ TRADING_AUTO_ORDER=false
 
 ## 加自选
 
-打开「监控预警」，点「添加」。代码可以写 `600519`，会按规则变成 `600519.SS`（沪）或 `000001.SZ`（深）。
+打开「监控预警」，点「添加」。也可以在看板搜索框输入代码或名称。`600519` 会变成 `600519.SS`（沪），`000001` 变成 `000001.SZ`（深），`00700` 或 `700` 变成 `00700.HK`（港股）。美股直接写代码，例如 `AAPL`。
 
 可以填：
 
@@ -66,4 +68,4 @@ TRADING_AUTO_ORDER=false
 
 ## 行情
 
-A 股走新浪行情，失败时改用腾讯行情，一次拉取多只。美股仍走原来的 Yahoo 路径（需要安装 `curl_cffi`）。刷新间隔见 `config.yaml` 的 `monitor.interval_active`。
+A 股走新浪行情，失败时改用腾讯行情。港股和美股指数、美股个股走东方财富。刷新间隔见 `config.yaml` 的 `monitor.interval_active`。
