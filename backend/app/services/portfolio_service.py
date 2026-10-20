@@ -32,6 +32,7 @@ def get_holdings(db: Session) -> PortfolioOut:
         "shares": 0.0,
         "total_cost": 0.0,
         "name": "",
+        "manual_value": None,
     })
 
     for tx in transactions:
@@ -41,6 +42,8 @@ def get_holdings(db: Session) -> PortfolioOut:
         if tx.action == TradeAction.buy:
             pos["total_cost"] += tx.amount + tx.fee
             pos["shares"] += tx.shares
+            if getattr(tx, "manual_value", None) is not None:
+                pos["manual_value"] = tx.manual_value
         elif tx.action == TradeAction.sell:
             if pos["shares"] > 0:
                 # Reduce cost proportionally
@@ -61,10 +64,25 @@ def get_holdings(db: Session) -> PortfolioOut:
         # Get latest cached price
         cached = db.query(PriceCache).filter(PriceCache.symbol == symbol).first()
         current_price = cached.price if cached else 0.0
-        currency = cached.currency if cached else "USD"
+        if cached and cached.currency:
+            currency = cached.currency
+        elif symbol.endswith((".SS", ".SZ", ".BJ")):
+            currency = "CNY"
+        elif symbol.endswith(".HK"):
+            currency = "HKD"
+        else:
+            currency = "USD"
 
-        avg_cost = pos["total_cost"] / pos["shares"] if pos["shares"] > 0 else 0.0
-        market_value = current_price * pos["shares"]
+        by_amount = pos["manual_value"] is not None
+        if by_amount:
+            market_value = float(pos["manual_value"])
+            current_price = market_value
+        else:
+            market_value = current_price * pos["shares"]
+        if not by_amount:
+            avg_cost = pos["total_cost"] / pos["shares"] if pos["shares"] > 0 else 0.0
+        else:
+            avg_cost = pos["total_cost"]
         unrealized_pnl = market_value - pos["total_cost"]
         pnl_pct = (unrealized_pnl / pos["total_cost"] * 100) if pos["total_cost"] > 0 else 0.0
 
@@ -92,6 +110,7 @@ def get_holdings(db: Session) -> PortfolioOut:
             currency=currency,
             market_value_usd=round(market_value_usd, 2),
             unrealized_pnl_usd=round(unrealized_pnl_usd, 2),
+            by_amount=by_amount,
         ))
 
         total_cost += pos["total_cost"]

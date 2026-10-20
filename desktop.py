@@ -7,6 +7,7 @@ service and opens its own window. It does not open a browser tab.
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import os
 import sys
@@ -67,6 +68,59 @@ def _ensure_stdio() -> None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 
+def _bind_file_drop(window) -> None:
+    """WebView2 leaves dataTransfer.files empty. Paths arrive only after a native drop listener is registered."""
+    from webview.dom import DOMEventHandler, _dnd_state
+
+    def deliver(paths: list[str]) -> None:
+        logging.info("native file drop: %s", len(paths))
+        window.evaluate_js("window.__nativeDrop && window.__nativeDrop(%s)" % json.dumps(paths))
+
+    def take_stored() -> list[str]:
+        stored = list(_dnd_state.get("paths") or [])
+        if not stored:
+            return []
+        _dnd_state["paths"] = []
+        return [item[1] for item in stored if isinstance(item, (list, tuple)) and len(item) > 1 and item[1]]
+
+    def handle(event):
+        files = (event.get("dataTransfer") or {}).get("files") or []
+        ready = [
+            item.get("pywebviewFullPath")
+            for item in files
+            if isinstance(item, dict) and item.get("pywebviewFullPath")
+        ]
+        if ready:
+            deliver(ready)
+            return
+
+        def wait_for_paths():
+            for _ in range(25):
+                found = take_stored()
+                if found:
+                    deliver(found)
+                    return
+                time.sleep(0.04)
+            deliver([])
+
+        threading.Thread(target=wait_for_paths, daemon=True).start()
+
+    def setup():
+        def bind():
+            time.sleep(0.2)
+            try:
+                allow = DOMEventHandler(lambda _event: None, prevent_default=True)
+                window.dom.document.on("dragover", allow)
+                window.dom.document.on("drop", DOMEventHandler(handle, prevent_default=True))
+                logging.info("native file drop ready")
+            except Exception:
+                logging.exception("native file drop failed")
+
+        threading.Thread(target=bind, daemon=True).start()
+
+    window.events.loaded += setup
+
+
 def main() -> None:
     _ensure_stdio()
     _setup_logging()
@@ -94,6 +148,7 @@ def main() -> None:
             min_size=(1100, 720),
             text_select=True,
         )
+        _bind_file_drop(window)
         webview.start(gui="edgechromium")
         logging.info("window closed")
         if owned and server is not None:

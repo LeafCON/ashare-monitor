@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import { messages } from './i18n.js'
 import Icon from './Icon.vue'
+import Segment from './Segment.vue'
 
 const lang = ref(localStorage.getItem('lang') === 'en' ? 'en' : 'zh')
 const L = computed(() => messages[lang.value])
@@ -73,7 +74,11 @@ const testingAlert = ref(false)
 const stockQuery = ref('')
 const searchResults = ref([])
 let searchTimer = null
-const holdingForm = ref({ symbol: '', name: '', shares: null, cost_price: null, market: 'cn' })
+const holdingForm = ref({ symbol: '', name: '', shares: null, cost_price: null, cost_amount: null, market_amount: null, mode: 'shares', market: 'cn' })
+const visionKey = ref('')
+const shotRows = ref([])
+const shotBusy = ref(false)
+const shotNote = ref('')
 const notifyStatus = ref(null)
 const agentStatus = ref(null)
 const showAddAlert = ref(false)
@@ -288,6 +293,7 @@ const venueForm = ref({
   stock_broker_api_base: '', stock_broker_api_key: '', stock_broker_api_secret: '',
   stock_broker_markets: 'cn,hk,us', stock_broker_quote_balance: '0',
   agent_symbols: 'BTCUSDT,ETHUSDT', jev_api_key: '', agent_kill: false,
+  reflex_mode: 'local', reflex_api_url: '', reflex_api_key: '', llama_server_url: 'http://127.0.0.1:8091',
 })
 function fillVenue(data) {
   venue.value = data
@@ -299,6 +305,17 @@ function fillVenue(data) {
   venueForm.value.stock_broker_quote_balance = data.broker.quote_balance || '0'
   venueForm.value.agent_symbols = data.agent.symbols || 'BTCUSDT,ETHUSDT'
   venueForm.value.agent_kill = !!data.agent.kill
+  venueForm.value.reflex_mode = data.agent.reflex_mode === 'api' ? 'api' : 'local'
+  venueForm.value.reflex_api_url = data.agent.api_url || ''
+  venueForm.value.llama_server_url = data.agent.llama_url || 'http://127.0.0.1:8091'
+  if (data.vision) {
+    const blob = `${data.vision.url || ''} ${data.vision.model || ''}`.toLowerCase()
+    apiProvider.value = !data.vision.url || blob.includes('deepseek') ? 'deepseek' : 'other'
+    if (apiProvider.value === 'other') {
+      if (data.vision.url) visionUrl.value = data.vision.url
+      if (data.vision.model) visionModel.value = data.vision.model
+    }
+  }
 }
 async function loadVenue() {
   try { fillVenue(await api('GET', '/api/settings')) } catch (e) { venueNote.value = e.message }
@@ -307,7 +324,7 @@ async function saveVenue() {
   venueSaving.value = true
   venueNote.value = ''
   const body = { ...venueForm.value }
-  for (const key of ['telegram_bot_token', 'binance_api_key', 'binance_api_secret', 'stock_broker_api_key', 'stock_broker_api_secret', 'jev_api_key']) {
+  for (const key of ['telegram_bot_token', 'telegram_chat_id', 'binance_api_key', 'binance_api_secret', 'stock_broker_api_key', 'stock_broker_api_secret', 'jev_api_key', 'reflex_api_key']) {
     if (!body[key]) delete body[key]
   }
   try {
@@ -318,6 +335,7 @@ async function saveVenue() {
     venueForm.value.stock_broker_api_key = ''
     venueForm.value.stock_broker_api_secret = ''
     venueForm.value.jev_api_key = ''
+    venueForm.value.reflex_api_key = ''
     venueNote.value = L.value.saved
     loadAgent(); loadAlerts()
   } catch (e) { venueNote.value = e.message }
@@ -360,19 +378,218 @@ async function addSearched(item) {
 }
 async function saveHolding() {
   const f = holdingForm.value
-  if (!f.symbol || f.shares == null || f.cost_price == null) { alert('请填写代码、股数和成本价'); return }
+  const body = { symbol: f.symbol, name: f.name, market: f.market, mode: f.mode }
+  if (f.mode === 'amount') {
+    body.cost_amount = f.cost_amount
+    body.market_amount = f.market_amount
+  } else {
+    body.shares = f.shares
+    body.cost_price = f.cost_price
+  }
   try {
-    portfolio.value = await api('POST', '/api/portfolio/holdings', { symbol: f.symbol, name: f.name, shares: f.shares, cost_price: f.cost_price, market: f.market })
-    holdingForm.value = { symbol: '', name: '', shares: null, cost_price: null, market: 'cn' }
+    portfolio.value = await api('POST', '/api/portfolio/holdings', body)
+    holdingForm.value = { symbol: '', name: '', shares: null, cost_price: null, cost_amount: null, market_amount: null, mode: 'shares', market: 'cn' }
     loadDashboard(); loadAlerts()
     nextTick(() => { renderHoldingPie(); renderHoldingPnl() })
-  } catch (e) { alert('保存持仓失败: ' + e.message) }
+  } catch (e) { alert(e.message) }
 }
 function editHolding(h) {
   const cn = h.symbol.endsWith('.SS') || h.symbol.endsWith('.SZ') || h.symbol.endsWith('.BJ')
   const hk = h.symbol.endsWith('.HK')
-  holdingForm.value = { symbol: h.symbol, name: h.name, shares: h.shares, cost_price: Number(h.avg_cost.toFixed(4)), market: hk ? 'hk' : cn ? 'cn' : 'us' }
+  holdingForm.value = {
+    symbol: h.symbol, name: h.name, mode: h.by_amount ? 'amount' : 'shares',
+    shares: h.by_amount ? null : h.shares,
+    cost_price: h.by_amount ? null : Number(h.avg_cost.toFixed(4)),
+    cost_amount: h.by_amount ? h.avg_cost : null,
+    market_amount: h.by_amount ? h.market_value : null,
+    market: hk ? 'hk' : cn ? 'cn' : 'us',
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+function holdQty(h) {
+  if (h.by_amount) return L.value.byAmount
+  return Number(h.shares).toLocaleString('en-US', { maximumFractionDigits: 4 })
+}
+const localAgents = ref([])
+const chosenAgent = ref('')
+const visionUrl = ref('')
+const visionModel = ref('')
+const apiProvider = ref('deepseek')
+const recognizeWith = ref('api')
+const strategyDraft = ref('')
+const strategyExtracting = ref(false)
+async function loadAgents() {
+  try {
+    localAgents.value = await api('GET', '/api/portfolio/agents')
+    const running = localAgents.value.find(item => item.running)
+    if (running) chosenAgent.value = running.id
+  } catch (e) { console.error(e) }
+}
+async function saveVisionKey() {
+  if (!visionKey.value && !visionUrl.value) return
+  const body = apiProvider.value === 'deepseek'
+    ? { vision_api_url: 'https://api.deepseek.com', vision_model: 'deepseek-flash' }
+    : { vision_api_url: visionUrl.value, vision_model: visionModel.value }
+  if (visionKey.value) body.vision_api_key = visionKey.value
+  try {
+    const data = await api('PUT', '/api/settings', body)
+    if (!venue.value) venue.value = {}
+    venue.value.vision = data.vision
+    visionKey.value = ''
+    shotNote.value = L.value.apiSavedNext
+  } catch (e) { shotNote.value = e.message }
+}
+const shotOver = ref(false)
+let shotDepth = 0
+function pickImage(files) {
+  return [...(files || [])].find(file => file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name))
+}
+function onShotEnter() { shotDepth += 1; shotOver.value = true }
+function onShotLeave() { shotDepth = Math.max(0, shotDepth - 1); if (!shotDepth) shotOver.value = false }
+function onWindowDragOver(event) {
+  if (tab.value !== 'portfolio') return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  shotOver.value = true
+}
+const shotFile = ref(null)
+function openShotPicker() {
+  if (!shotBusy.value && shotFile.value) shotFile.value.click()
+}
+function onWindowDrop(event) {
+  if (tab.value !== 'portfolio') return
+  event.preventDefault()
+  shotOver.value = false
+  shotDepth = 0
+  const file = pickImage(event.dataTransfer?.files)
+  if (file) readShotFile(file)
+}
+function onShotDrop(event) {
+  shotOver.value = false
+  shotDepth = 0
+  const file = pickImage(event.dataTransfer?.files)
+  if (file) readShotFile(file)
+}
+function errorText(data, status) {
+  const detail = data && data.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) return detail.map(item => item.msg || String(item)).join(' ')
+  return 'HTTP ' + status
+}
+const shotSteps = ref([])
+function visionPayload() {
+  if (recognizeWith.value !== 'api') return { agent: chosenAgent.value.startsWith('http') ? chosenAgent.value : '' }
+  if (apiProvider.value === 'deepseek') {
+    return { api_url: 'https://api.deepseek.com', model: 'deepseek-flash', api_key: visionKey.value }
+  }
+  return { api_url: visionUrl.value, model: visionModel.value, api_key: visionKey.value }
+}
+async function finishShot(resPromise) {
+  const res = await resPromise
+  const raw = await res.text()
+  let data = {}
+  try { data = raw ? JSON.parse(raw) : {} } catch { data = { detail: raw.slice(0, 180) } }
+  if (!res.ok) throw new Error(errorText(data, res.status) || raw.slice(0, 180) || ('HTTP ' + res.status))
+  const rows = data.holdings || []
+  shotSteps.value = [...shotSteps.value, L.value.stepFound.replace('{n}', String(rows.length))]
+  if (!rows.length) { shotNote.value = L.value.shotEmpty; return }
+  shotSteps.value = [...shotSteps.value, L.value.stepWrite]
+  let saved = 0
+  let failed = ''
+  for (const row of rows) {
+    const symbol = row.symbol || row.name
+    if (!symbol) continue
+    try {
+      await api('POST', '/api/portfolio/holdings', row.mode === 'amount'
+        ? { symbol, name: row.name, market: row.market, mode: 'amount', cost_amount: row.cost_amount || row.market_amount, market_amount: row.market_amount }
+        : { symbol, name: row.name, market: row.market, mode: 'shares', shares: row.shares, cost_price: row.cost_price || 0 })
+      saved += 1
+    } catch (err) { failed = err.message }
+  }
+  const done = saved ? L.value.stepWrote.replace('{n}', String(saved)) : (failed || L.value.shotEmpty)
+  shotSteps.value = [...shotSteps.value, done]
+  shotNote.value = done
+  if (saved) {
+    await loadPortfolio()
+    loadDashboard(); loadAlerts()
+    nextTick(() => document.getElementById('holdings-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }
+}
+async function readShotFile(file) {
+  if (!file || shotBusy.value) return
+  const useApi = recognizeWith.value === 'api'
+  const local = chosenAgent.value.startsWith('http')
+  const remote = venue.value && venue.value.vision && venue.value.vision.key_set
+  if (useApi && !(apiProvider.value === 'deepseek' ? (visionKey.value || remote) : (visionUrl.value && visionModel.value && (visionKey.value || remote)))) {
+    shotNote.value = L.value.needApi
+    shotSteps.value = [L.value.needApi]
+    return
+  }
+  if (!useApi && !local) {
+    shotNote.value = L.value.agentsNone
+    shotSteps.value = [L.value.agentsNone]
+    return
+  }
+  shotBusy.value = true
+  shotNote.value = L.value.stepAsk
+  shotSteps.value = [L.value.stepGot + file.name, L.value.stepAsk]
+  try {
+    const body = new FormData()
+    body.append('image', file)
+    const fields = visionPayload()
+    if (!useApi && local) {
+      body.append('agent', fields.agent || chosenAgent.value)
+      const picked = localAgents.value.find(item => item.id === chosenAgent.value)
+      if (picked && picked.models && picked.models.length) body.append('model', picked.models[0])
+    } else {
+      body.append('api_url', fields.api_url || '')
+      body.append('model', fields.model || '')
+      if (fields.api_key) body.append('api_key', fields.api_key)
+    }
+    await finishShot(fetch('/api/portfolio/holdings/read-image', { method: 'POST', body }))
+  } catch (e) {
+    shotSteps.value = [...shotSteps.value, e.message || L.value.shotEmpty]
+    shotNote.value = e.message || L.value.shotEmpty
+  }
+  finally { shotBusy.value = false; shotOver.value = false }
+}
+function readShotPath(path) {
+  if (!path || shotBusy.value) return
+  if (tab.value !== 'portfolio') tab.value = 'portfolio'
+  const useApi = recognizeWith.value === 'api'
+  const local = chosenAgent.value.startsWith('http')
+  const remote = venue.value && venue.value.vision && venue.value.vision.key_set
+  if (useApi && !(apiProvider.value === 'deepseek' ? (visionKey.value || remote) : (visionUrl.value && visionModel.value && (visionKey.value || remote)))) {
+    shotNote.value = L.value.needApi
+    shotSteps.value = [L.value.needApi]
+    shotOver.value = false
+    return
+  }
+  if (!useApi && !local) {
+    shotNote.value = L.value.agentsNone
+    shotSteps.value = [L.value.agentsNone]
+    shotOver.value = false
+    return
+  }
+  shotBusy.value = true
+  shotOver.value = true
+  shotNote.value = L.value.stepAsk
+  const name = path.split(/[/\\]/).pop()
+  shotSteps.value = [L.value.stepGot + name, L.value.stepAsk]
+  const fields = visionPayload()
+  finishShot(fetch('/api/portfolio/holdings/read-path', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, ...fields }),
+  })).catch((e) => {
+    shotSteps.value = [...shotSteps.value, e.message || L.value.shotEmpty]
+    shotNote.value = e.message || L.value.shotEmpty
+  }).finally(() => { shotBusy.value = false; shotOver.value = false })
+}
+function readShot(event) {
+  const file = event.target.files && event.target.files[0]
+  event.target.value = ''
+  if (file) readShotFile(file)
 }
 async function removeHolding(symbol) {
   if (!confirm('删除 ' + symbol + ' 的持仓记录？')) return
@@ -455,6 +672,66 @@ async function loadQuantSignals() {
   quantLoading.value = true
   try { quantSignals.value = await api('GET', '/api/quant/signals') } catch (e) { console.error('Quant load error:', e) }
   finally { quantLoading.value = false }
+  loadStrategies()
+}
+const strategies = ref([])
+const strategyForm = ref({ name: '', symbol: '', action: 'buy', conditions: [{ metric: 'pe_ttm_pct', op: 'lte', value: 20 }] })
+async function loadStrategies() {
+  try { strategies.value = await api('GET', '/api/quant/strategies') } catch (e) { console.error(e) }
+}
+function addCondition() {
+  if (strategyForm.value.conditions.length >= 4) return
+  strategyForm.value.conditions.push({ metric: 'roe', op: 'gte', value: 15 })
+}
+function removeCondition(index) {
+  if (strategyForm.value.conditions.length === 1) return
+  strategyForm.value.conditions.splice(index, 1)
+}
+async function extractStrategyText() {
+  if (!strategyDraft.value.trim()) return
+  if (!(apiProvider.value === 'deepseek'
+    ? (visionKey.value || (venue.value && venue.value.vision && venue.value.vision.key_set))
+    : (visionUrl.value && visionModel.value && (visionKey.value || (venue.value && venue.value.vision && venue.value.vision.key_set))))) {
+    shotNote.value = ''
+    strategyExtracting.value = false
+    alert(L.value.needApi)
+    return
+  }
+  strategyExtracting.value = true
+  try {
+    await api('POST', '/api/quant/strategies/from-text', {
+      text: strategyDraft.value,
+      api_url: apiProvider.value === 'deepseek' ? 'https://api.deepseek.com' : visionUrl.value,
+      api_model: apiProvider.value === 'deepseek' ? 'deepseek-flash' : visionModel.value,
+      api_key: visionKey.value,
+    })
+    strategyDraft.value = ''
+    await loadStrategies()
+  } catch (e) { alert(e.message) }
+  finally { strategyExtracting.value = false }
+}
+async function saveStrategy() {
+  try {
+    await api('POST', '/api/quant/strategies', {
+      name: strategyForm.value.name,
+      symbol: strategyForm.value.symbol,
+      action: strategyForm.value.action,
+      conditions: strategyForm.value.conditions,
+    })
+    strategyForm.value = { name: '', symbol: '', action: 'buy', conditions: [{ metric: 'pe_ttm_pct', op: 'lte', value: 20 }] }
+    loadStrategies()
+  } catch (e) { alert(e.message) }
+}
+async function toggleStrategy(row) {
+  try { await api('PUT', '/api/quant/strategies/' + row.id); loadStrategies() } catch (e) { alert(e.message) }
+}
+async function deleteStrategy(id) {
+  try { await api('DELETE', '/api/quant/strategies/' + id); loadStrategies() } catch (e) { alert(e.message) }
+}
+function strategyText(row) {
+  const bits = row.conditions.map(item => `${L.value[item.metric] || item.metric} ${item.op === 'lte' ? '≤' : '≥'} ${item.value}`)
+  const action = L.value['act_' + row.action] || row.action
+  return bits.join(lang.value === 'zh' ? ' 且 ' : ' and ') + ' → ' + action
 }
 
 async function refreshQuant() {
@@ -546,8 +823,8 @@ function switchTab(t) {
   moreMenuOpen.value = false
   nextTick(() => {
     if (t === 'dashboard') { if (dashPieInstance) { dashPieInstance.dispose(); dashPieInstance = null }; renderDashPie(); renderNetWorthChart() }
-    if (t === 'portfolio') { if (holdingPieInstance) { holdingPieInstance.dispose(); holdingPieInstance = null }; if (holdingPnlInstance) { holdingPnlInstance.dispose(); holdingPnlInstance = null }; renderHoldingPie(); renderHoldingPnl() }
-    if (t === 'quant') { loadQuantSignals() }
+    if (t === 'portfolio') { if (holdingPieInstance) { holdingPieInstance.dispose(); holdingPieInstance = null }; if (holdingPnlInstance) { holdingPnlInstance.dispose(); holdingPnlInstance = null }; renderHoldingPie(); renderHoldingPnl(); loadAgents(); if (!venue.value) loadVenue() }
+    if (t === 'quant') { loadQuantSignals(); loadStrategies(); if (!venue.value) loadVenue() }
     if (t === 'earnings') { loadEarnings() }
     if (t === 'settings') { loadVenue() }
   })
@@ -572,10 +849,13 @@ function renderDashPie() {
 function renderHoldingPie() {
   if (!holdingPieChart.value || !portfolio.value) return
   const t = getChartTheme(); const holdings = portfolio.value.holdings || []
-  const data = holdings.map(h => ({ name: h.symbol + ' ' + h.name, value: Math.round(h.market_value_usd || h.market_value) }))
+  const codes = [...new Set(holdings.map(holdingCurrency))]
+  const single = codes.length === 1
+  const sym = currencySymbol(single ? codes[0] : 'USD')
+  const data = holdings.map(h => ({ name: h.name && h.name !== h.symbol ? h.symbol + ' ' + h.name : h.symbol, value: Math.round(single ? h.market_value : (h.market_value_usd || h.market_value)) }))
   if (data.length === 0) return
   if (!holdingPieInstance) holdingPieInstance = echarts.init(holdingPieChart.value)
-  holdingPieInstance.setOption({ tooltip: { trigger: 'item', formatter: '{b}: ${c} ({d}%)', backgroundColor: t.tooltipBg, borderColor: t.borderColor, textStyle: { color: t.textColor } }, legend: { type: 'scroll', bottom: 0, textStyle: { color: t.textColor, fontSize: 11 } }, color: COLORS, series: [{ type: 'pie', radius: ['35%', '65%'], center: ['50%', '42%'], itemStyle: { borderRadius: 6 }, label: { show: true, color: t.textColor, formatter: '{b}\n{d}%', fontSize: 11 }, data }] }, true)
+  holdingPieInstance.setOption({ tooltip: { trigger: 'item', formatter: (p) => p.name + ': ' + sym + fmtNum(p.value) + ' (' + p.percent + '%)', backgroundColor: t.tooltipBg, borderColor: t.borderColor, textStyle: { color: t.textColor } }, legend: { type: 'scroll', bottom: 0, textStyle: { color: t.textColor, fontSize: 11 } }, color: COLORS, series: [{ type: 'pie', radius: ['35%', '65%'], center: ['50%', '42%'], itemStyle: { borderRadius: 6 }, label: { show: true, color: t.textColor, formatter: '{b}\n{d}%', fontSize: 11 }, data }] }, true)
   holdingPieInstance.resize()
 }
 
@@ -583,15 +863,19 @@ function renderHoldingPnl() {
   if (!holdingPnlChart.value || !portfolio.value) return
   const t = getChartTheme(); const holdings = portfolio.value.holdings || []
   if (holdings.length === 0) return
-  const sorted = [...holdings].sort((a, b) => (b.unrealized_pnl_usd || b.unrealized_pnl) - (a.unrealized_pnl_usd || a.unrealized_pnl))
-  const names = sorted.map(h => h.symbol); const values = sorted.map(h => h.unrealized_pnl_usd || h.unrealized_pnl)
+  const codes = [...new Set(holdings.map(holdingCurrency))]
+  const single = codes.length === 1
+  const sym = currencySymbol(single ? codes[0] : 'USD')
+  const pnlOf = (h) => single ? h.unrealized_pnl : (h.unrealized_pnl_usd || h.unrealized_pnl)
+  const sorted = [...holdings].sort((a, b) => pnlOf(b) - pnlOf(a))
+  const names = sorted.map(h => h.symbol); const values = sorted.map(pnlOf)
   const colors = values.map(v => v >= 0 ? '#1d7f3c' : '#c41e3a')
   if (!holdingPnlInstance) holdingPnlInstance = echarts.init(holdingPnlChart.value)
   holdingPnlInstance.setOption({
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: t.tooltipBg, borderColor: t.borderColor, textStyle: { color: t.textColor }, formatter: function(params) { const p = params[0]; const h = sorted[p.dataIndex]; return '<b>' + h.symbol + '</b> ' + h.name + '<br/>盈亏: $' + (h.unrealized_pnl_usd || h.unrealized_pnl).toFixed(2) + '<br/>收益率: ' + h.pnl_pct.toFixed(2) + '%' } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: t.tooltipBg, borderColor: t.borderColor, textStyle: { color: t.textColor }, formatter: function(params) { const p = params[0]; const h = sorted[p.dataIndex]; return '<b>' + h.symbol + '</b> ' + (h.name && h.name !== h.symbol ? h.name : '') + '<br/>盈亏: ' + sym + Number(pnlOf(h)).toFixed(2) + '<br/>收益率: ' + h.pnl_pct.toFixed(2) + '%' } },
     grid: { left: 60, right: 20, top: 10, bottom: 30 },
     xAxis: { type: 'category', data: names, axisLabel: { color: t.textColor, fontSize: 11, fontFamily: 'SF Mono, monospace' }, axisLine: { lineStyle: { color: t.borderColor } } },
-    yAxis: { type: 'value', axisLabel: { color: t.textColor, formatter: '${value}' }, splitLine: { lineStyle: { color: t.splitLineColor } }, axisLine: { lineStyle: { color: t.borderColor } } },
+    yAxis: { type: 'value', axisLabel: { color: t.textColor, formatter: (value) => sym + value }, splitLine: { lineStyle: { color: t.splitLineColor } }, axisLine: { lineStyle: { color: t.borderColor } } },
     series: [{ type: 'bar', data: values.map((v, i) => ({ value: v, itemStyle: { color: colors[i], borderRadius: [4, 4, 0, 0] } })), barMaxWidth: 40 }]
   }, true)
   holdingPnlInstance.resize()
@@ -714,6 +998,54 @@ function fmtPrice(v, currency) { if (v == null) return '-'; const sym = currency
 function fmtChange(v) { if (v == null) return '-'; return (v >= 0 ? '+' : '') + v.toFixed(2) }
 function fmtPct(v) { if (v == null) return '-'; return (v >= 0 ? '+' : '') + v.toFixed(2) + '%' }
 function fmtNum(v, decimals = 2) { if (v == null) return '0'; return v.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) }
+function holdingCurrency(h) {
+  const market = symbolMarket(h.symbol)
+  if (market === 'cn') return 'CNY'
+  if (market === 'hk') return 'HKD'
+  return 'USD'
+}
+function currencySymbol(code) {
+  if (code === 'CNY') return '¥'
+  if (code === 'HKD') return 'HK$'
+  return '$'
+}
+function moneyText(code, amount) {
+  return currencySymbol(code) + fmtNum(amount)
+}
+const holdingSummary = computed(() => {
+  const list = portfolio.value?.holdings || []
+  const blank = { cost: '—', value: '—', pnl: '—', pct: 0, costAlt: '', valueAlt: '', pnlAlt: '' }
+  if (!list.length) return blank
+  const codes = [...new Set(list.map(holdingCurrency))]
+  const costOf = (h) => Number(h.market_value) - Number(h.unrealized_pnl)
+  const sum = (pick) => list.reduce((total, h) => total + pick(h), 0)
+  if (codes.length === 1) {
+    const code = codes[0]
+    const cost = sum(costOf)
+    const pnl = sum(h => Number(h.unrealized_pnl))
+    return {
+      cost: moneyText(code, cost),
+      value: moneyText(code, sum(h => Number(h.market_value))),
+      pnl: moneyText(code, pnl),
+      pct: cost ? pnl / cost * 100 : 0,
+      costAlt: '', valueAlt: '', pnlAlt: '',
+    }
+  }
+  const rate = Number(totalAssets.value?.usd_to_cny) || 7.2
+  const toUsd = (amount, code) => code === 'CNY' ? amount / rate : code === 'HKD' ? amount / 7.8 : amount
+  const costUsd = sum(h => toUsd(costOf(h), holdingCurrency(h)))
+  const valueUsd = sum(h => toUsd(Number(h.market_value), holdingCurrency(h)))
+  const pnlUsd = sum(h => toUsd(Number(h.unrealized_pnl), holdingCurrency(h)))
+  return {
+    cost: moneyText('CNY', costUsd * rate),
+    value: moneyText('CNY', valueUsd * rate),
+    pnl: moneyText('CNY', pnlUsd * rate),
+    pct: costUsd ? pnlUsd / costUsd * 100 : 0,
+    costAlt: '≈ ' + moneyText('USD', costUsd),
+    valueAlt: '≈ ' + moneyText('USD', valueUsd),
+    pnlAlt: '≈ ' + moneyText('USD', pnlUsd),
+  }
+})
 
 // 资产构成饼图数据 + SVG arc
 function cashPieSegments(ta) {
@@ -804,6 +1136,19 @@ function loadTvScript() {
 
 let refreshInterval
 onMounted(() => {
+  window.__nativeDrop = (paths) => {
+    const list = paths || []
+    const path = list.find(item => /\.(png|jpe?g|webp|gif|bmp)$/i.test(item))
+    if (tab.value !== 'portfolio') tab.value = 'portfolio'
+    if (!path) {
+      const note = list.length ? L.value.shotType : '松开了，窗口没有把图片路径交过来'
+      shotSteps.value = [note]
+      shotNote.value = note
+      shotOver.value = false
+      return
+    }
+    readShotPath(path)
+  }
   applyTheme(); mql.addEventListener('change', onSystemThemeChange)
   document.title = L.value.docTitle
   document.documentElement.lang = lang.value === 'en' ? 'en' : 'zh-CN'
@@ -812,8 +1157,10 @@ onMounted(() => {
   refreshInterval = setInterval(() => { loadDashboard(); loadMacro() }, 60000)
   window.addEventListener('resize', () => { dashPieInstance?.resize(); holdingPieInstance?.resize(); holdingPnlInstance?.resize(); quantPeChartInstance?.resize(); netWorthChartInstance?.resize() })
   document.addEventListener('click', closeMoreMenu)
+  window.addEventListener('dragover', onWindowDragOver)
+  window.addEventListener('drop', onWindowDrop)
 })
-onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('change', onSystemThemeChange); dashPieInstance?.dispose(); holdingPieInstance?.dispose(); holdingPnlInstance?.dispose(); quantPeChartInstance?.dispose(); netWorthChartInstance?.dispose(); document.removeEventListener('click', closeMoreMenu) })
+onUnmounted(() => { window.__nativeDrop = null; clearInterval(refreshInterval); mql.removeEventListener('change', onSystemThemeChange); dashPieInstance?.dispose(); holdingPieInstance?.dispose(); holdingPnlInstance?.dispose(); quantPeChartInstance?.dispose(); netWorthChartInstance?.dispose(); document.removeEventListener('click', closeMoreMenu); window.removeEventListener('dragover', onWindowDragOver); window.removeEventListener('drop', onWindowDrop) })
 </script>
 
 <template>
@@ -850,6 +1197,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
       <h3>{{ L.agentTitle }}</h3>
       <p class="hint">{{ L.agentBody }}</p>
       <p v-for="(item, key) in (agentStatus.markets || {})" :key="key">{{ L[key] || key }}：{{ item.waiting ? L.waiting : L.ready }}</p>
+      <p v-if="agentStatus.backend">{{ L.modelNow }}：{{ agentStatus.reflex_mode === 'api' ? 'API' : L.localModel }} · {{ agentStatus.backend }}</p>
       <p v-if="agentStatus.last">{{ agentStatus.last.action }} / {{ agentStatus.last.regime }} / {{ agentStatus.order && agentStatus.order.reason }}</p>
       <button class="btn-primary btn-sm" @click="switchTab('settings')">{{ L.openSettings }}</button>
       <button class="btn-outline btn-sm" @click="runPaperTick">{{ L.paperTick }}</button>
@@ -909,25 +1257,64 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
   <div v-if="tab==='portfolio'" class="container">
     <div class="page-header"><h2>{{ L.holdingsTitle }}</h2><button class="btn-outline btn-sm" @click="loadPortfolio();loadDashboard()">{{ L.refresh }}</button></div>
     <div class="card form-card" style="margin-bottom:28px">
+      <h3>{{ L.aiFill }}</h3>
+      <p class="hint">{{ L.aiFillLead }}</p>
+      <Segment v-model="recognizeWith" :options="[{ id: 'api', label: L.apiMode }, { id: 'local', label: L.localMode }]" />
+      <div class="mode-pane" :class="{ on: recognizeWith==='api' }">
+        <div class="mode-pane-clip">
+          <div class="form-grid" style="margin-top:16px">
+            <div class="form-group"><label>{{ L.provider }}</label><select v-model="apiProvider"><option value="deepseek">DeepSeek</option><option value="other">{{ L.otherApi }}</option></select></div>
+            <div class="form-group" v-if="apiProvider==='other'"><label>{{ L.visionUrl }}</label><input v-model="visionUrl" :placeholder="L.visionUrlPh"></div>
+            <div class="form-group" v-if="apiProvider==='other'"><label>{{ L.visionModel }}</label><input v-model="visionModel" :placeholder="L.visionModelPh"></div>
+            <div class="form-group"><label>{{ L.visionKey }}</label><input v-model="visionKey" type="password" autocomplete="off" :placeholder="venue && venue.vision && venue.vision.key_set ? venue.vision.key_hint : L.visionKeyPh"></div>
+            <div class="form-group form-actions"><button type="button" class="btn-primary" @click="saveVisionKey">{{ L.save }}</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="mode-pane" :class="{ on: recognizeWith==='local' }">
+        <div class="mode-pane-clip">
+          <div v-if="localAgents.length" class="agent-picks">
+            <button v-for="agent in localAgents" :key="agent.id" type="button" class="agent-pick" :class="{active: chosenAgent===agent.id}" :disabled="!agent.running" @click="chosenAgent=agent.id">
+              <span>{{ agent.name }}</span>
+              <span class="quote-name">{{ agent.running ? (agent.models.join(' · ') || L.agentRunning) : L.agentStopped }}</span>
+            </button>
+          </div>
+          <p class="hint" v-else>{{ L.agentsNone }}</p>
+        </div>
+      </div>
+      <div class="shot-drop" :class="{ over: shotOver, busy: shotBusy }" @click="openShotPicker" @dragenter.prevent="onShotEnter" @dragover.prevent="onShotEnter" @dragleave.prevent="onShotLeave" @drop.prevent="onShotDrop">
+        <input ref="shotFile" class="shot-file" type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp" @change="readShot" @click.stop :disabled="shotBusy">
+        <span v-if="shotBusy" class="shot-spin" aria-hidden="true"></span>
+        <span>{{ shotBusy ? L.readingShot : (shotOver ? L.dropNow : ((venue && venue.vision && venue.vision.key_set) ? L.dropAfterSave : L.sendShot)) }}</span>
+      </div>
+      <ol class="shot-steps" v-if="shotSteps.length">
+        <li v-for="(step, index) in shotSteps" :key="index">{{ step }}</li>
+      </ol>
+      <p class="shot-note" v-if="shotNote">{{ shotNote }}</p>
+    </div>
+    <div class="card form-card" style="margin-bottom:28px">
       <form @submit.prevent="saveHolding" class="form-grid">
         <div class="form-group"><label>{{ L.code }}</label><input v-model="holdingForm.symbol" placeholder="600519、00700 或 AAPL" required></div>
         <div class="form-group"><label>{{ L.name }}</label><input v-model="holdingForm.name" placeholder="贵州茅台"></div>
         <div class="form-group"><label>{{ L.market }}</label><select v-model="holdingForm.market"><option value="cn">{{ L.cn }}</option><option value="hk">{{ L.hk }}</option><option value="us">{{ L.us }}</option></select></div>
-        <div class="form-group"><label>{{ L.shares }}</label><input v-model.number="holdingForm.shares" type="number" min="0" step="1" required></div>
-        <div class="form-group"><label>{{ L.cost }}</label><input v-model.number="holdingForm.cost_price" type="number" min="0" step="0.01" required></div>
+        <div class="form-group"><label>{{ L.holdMode }}</label><select v-model="holdingForm.mode"><option value="shares">{{ L.byShares }}</option><option value="amount">{{ L.byAmount }}</option></select></div>
+        <div class="form-group" v-if="holdingForm.mode==='shares'"><label>{{ L.shares }}</label><input v-model.number="holdingForm.shares" type="number" min="0" step="any" required></div>
+        <div class="form-group" v-if="holdingForm.mode==='shares'"><label>{{ L.cost }}</label><input v-model.number="holdingForm.cost_price" type="number" min="0" step="any" required></div>
+        <div class="form-group" v-if="holdingForm.mode==='amount'"><label>{{ L.costAmount }}</label><input v-model.number="holdingForm.cost_amount" type="number" min="0" step="0.01" required></div>
+        <div class="form-group" v-if="holdingForm.mode==='amount'"><label>{{ L.marketAmount }}</label><input v-model.number="holdingForm.market_amount" type="number" min="0" step="0.01"></div>
         <div class="form-group form-actions"><button type="submit" class="btn-primary">{{ L.saveHolding }}</button></div>
       </form>
-      <p class="hint">{{ L.holdingHint }}</p>
+      <p class="hint">{{ holdingForm.mode==='amount' ? L.amountHint : L.holdingHint }}</p>
     </div>
-    <div class="summary-cards" v-if="portfolio">
-      <div class="summary-card"><div class="summary-icon">💰</div><div class="summary-content"><div class="summary-label">总成本</div><div class="summary-value">${{ fmtNum(portfolio.total_cost) }}</div></div></div>
-      <div class="summary-card"><div class="summary-icon">📊</div><div class="summary-content"><div class="summary-label">总市值</div><div class="summary-value">${{ fmtNum(portfolio.total_value) }}</div></div></div>
-      <div class="summary-card" :class="portfolio.total_pnl>=0?'card-positive':'card-negative'"><div class="summary-icon">{{ portfolio.total_pnl>=0?'📈':'📉' }}</div><div class="summary-content"><div class="summary-label">总盈亏</div><div class="summary-value" :class="pnlClass(portfolio.total_pnl)">${{ fmtNum(portfolio.total_pnl) }} ({{ fmtPct(portfolio.total_pnl_pct) }})</div></div></div>
+    <div id="holdings-list" class="summary-cards" v-if="portfolio">
+      <div class="summary-card"><div class="summary-content"><div class="summary-label">总成本</div><div class="summary-value">{{ holdingSummary.cost }}</div><div class="summary-sub" v-if="holdingSummary.costAlt">{{ holdingSummary.costAlt }}</div></div></div>
+      <div class="summary-card"><div class="summary-content"><div class="summary-label">总市值</div><div class="summary-value">{{ holdingSummary.value }}</div><div class="summary-sub" v-if="holdingSummary.valueAlt">{{ holdingSummary.valueAlt }}</div></div></div>
+      <div class="summary-card" :class="holdingSummary.pct>=0?'card-positive':'card-negative'"><div class="summary-content"><div class="summary-label">总盈亏</div><div class="summary-value" :class="pnlClass(holdingSummary.pct)">{{ holdingSummary.pnl }} ({{ fmtPct(holdingSummary.pct) }})</div><div class="summary-sub" v-if="holdingSummary.pnlAlt">{{ holdingSummary.pnlAlt }}</div></div></div>
     </div>
     <div class="grid-2">
       <div>
         <div class="card"><div class="card-header"><h3>{{ L.usHold }}</h3><span class="badge">{{ usHoldings.length }}</span></div>
-          <table class="table" v-if="usHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in usHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">${{ h.avg_cost.toFixed(2) }}</td><td class="mono">${{ h.current_price.toFixed(2) }}</td><td class="mono">${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
+          <table class="table" v-if="usHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in usHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ holdQty(h) }}</td><td class="mono">${{ h.avg_cost.toFixed(2) }}</td><td class="mono">${{ h.current_price.toFixed(2) }}</td><td class="mono">${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
           <div class="mobile-card-list" v-if="usHoldings.length>0">
             <div v-for="h in usHoldings" :key="'m-ush-'+h.symbol" class="mobile-stock-card">
               <div class="mobile-stock-card-header">
@@ -948,10 +1335,10 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
           </div>
           <div v-if="usHoldings.length===0" class="empty">{{ L.noUsHold }}</div></div>
         <div class="card mt"><div class="card-header"><h3>{{ L.hkHold }}</h3><span class="badge">{{ hkHoldings.length }}</span></div>
-          <table class="table" v-if="hkHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in hkHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">HK${{ h.avg_cost.toFixed(2) }}</td><td class="mono">HK${{ h.current_price.toFixed(2) }}</td><td class="mono">HK${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">HK${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
+          <table class="table" v-if="hkHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in hkHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ holdQty(h) }}</td><td class="mono">HK${{ h.avg_cost.toFixed(2) }}</td><td class="mono">HK${{ h.current_price.toFixed(2) }}</td><td class="mono">HK${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">HK${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
           <div v-if="hkHoldings.length===0" class="empty">{{ L.noHkHold }}</div></div>
         <div class="card mt"><div class="card-header"><h3>{{ L.cnHold }}</h3><span class="badge">{{ cnHoldings.length }}</span></div>
-          <table class="table" v-if="cnHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in cnHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">¥{{ h.avg_cost.toFixed(2) }}</td><td class="mono">¥{{ h.current_price.toFixed(2) }}</td><td class="mono">¥{{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">¥{{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
+          <table class="table" v-if="cnHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in cnHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ holdQty(h) }}</td><td class="mono">¥{{ h.avg_cost.toFixed(2) }}</td><td class="mono">¥{{ h.current_price.toFixed(2) }}</td><td class="mono">¥{{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">¥{{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
           <div class="mobile-card-list" v-if="cnHoldings.length>0">
             <div v-for="h in cnHoldings" :key="'m-cnh-'+h.symbol" class="mobile-stock-card">
               <div class="mobile-stock-card-header">
@@ -1506,11 +1893,61 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
       <h2>{{ L.quant }}</h2>
       <div class="page-actions">
         <button class="btn-outline btn-sm" @click="loadQuantSignals" :disabled="quantLoading">{{ L.refresh }}</button>
-        <button class="btn-primary btn-sm" @click="refreshQuant" :disabled="quantRefreshing">{{ quantRefreshing ? '更新中...' : '📡 拉取最新数据' }}</button>
+        <button class="btn-primary btn-sm" @click="refreshQuant" :disabled="quantRefreshing">{{ quantRefreshing ? L.updating : L.pullData }}</button>
       </div>
     </div>
 
-    <div v-if="quantLoading && quantSignals.length===0" class="card"><div class="empty">加载中...</div></div>
+    <div class="card" style="margin-bottom:28px">
+      <h3>{{ L.writeStrategy }}</h3>
+      <div class="form-grid">
+        <div class="form-group"><label>{{ L.provider }}</label><select v-model="apiProvider"><option value="deepseek">DeepSeek</option><option value="other">{{ L.otherApi }}</option></select></div>
+        <div class="form-group" v-if="apiProvider==='other'"><label>{{ L.visionUrl }}</label><input v-model="visionUrl" :placeholder="L.visionUrlPh"></div>
+        <div class="form-group" v-if="apiProvider==='other'"><label>{{ L.visionModel }}</label><input v-model="visionModel" :placeholder="L.visionModelPh"></div>
+        <div class="form-group"><label>{{ L.visionKey }}</label><input v-model="visionKey" type="password" autocomplete="off" :placeholder="venue && venue.vision && venue.vision.key_set ? venue.vision.key_hint : L.visionKeyPh"></div>
+        <div class="form-group form-actions"><button type="button" class="btn-primary" @click="saveVisionKey">{{ L.save }}</button></div>
+      </div>
+      <div class="form-group" style="margin:16px 0 12px"><label>{{ L.strategyFromText }}</label><textarea v-model="strategyDraft" rows="4" :placeholder="L.strategyTextPh"></textarea></div>
+      <button type="button" class="btn-primary btn-sm" @click="extractStrategyText" :disabled="strategyExtracting">{{ strategyExtracting ? L.extracting : L.strategyFromText }}</button>
+      <form @submit.prevent="saveStrategy" style="margin-top:20px">
+        <div class="form-grid">
+          <div class="form-group"><label>{{ L.strategyName }}</label><input v-model="strategyForm.name" required :placeholder="L.strategyNamePh"></div>
+          <div class="form-group"><label>{{ L.code }}</label><input v-model="strategyForm.symbol" :placeholder="L.strategySymbolPh"></div>
+          <div class="form-group"><label>{{ L.strategyAction }}</label>
+            <select v-model="strategyForm.action"><option value="buy">{{ L.act_buy }}</option><option value="sell">{{ L.act_sell }}</option><option value="watch">{{ L.act_watch }}</option></select>
+          </div>
+        </div>
+        <div v-for="(cond, index) in strategyForm.conditions" :key="index" class="condition-row">
+          <select v-model="cond.metric">
+            <option value="pe_ttm_pct">{{ L.pe_ttm_pct }}</option>
+            <option value="pb_pct">{{ L.pb_pct }}</option>
+            <option value="roe">{{ L.roe }}</option>
+            <option value="gross_margin">{{ L.gross_margin }}</option>
+            <option value="revenue_growth">{{ L.revenue_growth }}</option>
+            <option value="change_pct">{{ L.change_pct_rule }}</option>
+          </select>
+          <select v-model="cond.op"><option value="lte">≤</option><option value="gte">≥</option></select>
+          <input v-model.number="cond.value" type="number" step="0.01" required>
+          <button type="button" class="text-action" @click="removeCondition(index)">{{ L.remove }}</button>
+        </div>
+        <div class="settings-actions">
+          <button type="button" class="btn-outline btn-sm" @click="addCondition">{{ L.addCondition }}</button>
+          <button class="btn-primary btn-sm" type="submit">{{ L.saveStrategy }}</button>
+        </div>
+      </form>
+      <div v-if="strategies.length" class="strategy-list">
+        <div v-for="row in strategies" :key="row.id" class="strategy-row">
+          <div>
+            <div class="quote-symbol">{{ row.name }}</div>
+            <div class="quote-name">{{ strategyText(row) }}<span v-if="row.symbol"> · {{ row.symbol }}</span></div>
+          </div>
+          <div class="quote-name">{{ L.hits }} {{ row.hits.length }}</div>
+          <button type="button" class="btn-outline btn-sm" @click="toggleStrategy(row)">{{ row.enabled ? L.enabled : L.disabled }}</button>
+          <button type="button" class="btn-danger-sm" @click="deleteStrategy(row.id)">{{ L.remove }}</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="quantLoading && quantSignals.length===0" class="card"><div class="empty">{{ L.loading }}</div></div>
 
     <div v-if="quantSignals.length > 0" class="quant-grid">
       <div v-for="sig in quantSignals" :key="sig.symbol" class="quant-card" @click="toggleQuantDetail(sig.symbol)">
@@ -1542,7 +1979,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
         <!-- Expanded: PE history chart -->
         <div v-if="quantExpandedSymbol === sig.symbol" class="quant-detail" @click.stop>
-          <div class="quant-detail-header">📈 PE(TTM) 历史分位走势</div>
+          <div class="quant-detail-header">{{ L.peHistory }}</div>
           <div ref="quantPeChartRef" class="chart-box" style="height:250px"></div>
         </div>
       </div>
@@ -1590,10 +2027,27 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
         </div>
       </section>
       <section class="card settings-card">
-        <h3>{{ L.agentSection }}</h3>
-        <div class="form-grid">
+        <h3>{{ L.modelSection }}</h3>
+        <p class="hint">{{ L.modelLead }} <span v-if="venue">{{ L.modelNow }}：{{ venue.agent.reflex_active }}</span></p>
+        <Segment v-model="venueForm.reflex_mode" :options="[{ id: 'local', label: L.localModel }, { id: 'api', label: 'API' }]" />
+        <div class="mode-pane" :class="{ on: venueForm.reflex_mode==='local' }">
+          <div class="mode-pane-clip">
+            <div class="form-grid" style="margin-top:16px">
+              <div class="form-group"><label>{{ L.llamaUrl }}</label><input v-model="venueForm.llama_server_url" placeholder="http://127.0.0.1:8091"></div>
+            </div>
+            <p class="hint" v-if="venue">{{ venue.agent.llama_up ? L.llamaOn : L.llamaOff }}</p>
+          </div>
+        </div>
+        <div class="mode-pane" :class="{ on: venueForm.reflex_mode==='api' }">
+          <div class="mode-pane-clip">
+            <div class="form-grid" style="margin-top:16px">
+              <div class="form-group"><label>{{ L.apiUrl }}</label><input v-model="venueForm.reflex_api_url" placeholder="https://api.example.com/v1"></div>
+              <div class="form-group"><label>{{ L.apiKey }}</label><input v-model="venueForm.reflex_api_key" type="password" autocomplete="off" :placeholder="venue && venue.agent.api_key_hint"></div>
+            </div>
+          </div>
+        </div>
+        <div class="form-grid" style="margin-top:16px">
           <div class="form-group"><label>{{ L.agentSymbols }}</label><input v-model="venueForm.agent_symbols" placeholder="BTCUSDT,ETHUSDT"></div>
-          <div class="form-group"><label>{{ L.jevKey }}</label><input v-model="venueForm.jev_api_key" type="password" autocomplete="off"></div>
         </div>
         <label class="check-row"><input type="checkbox" v-model="venueForm.agent_kill"> {{ L.killSwitch }}</label>
       </section>

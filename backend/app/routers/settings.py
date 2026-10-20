@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from ..services.env_store import FIELDS, SECRET_FIELDS, apply_updates, hint, read_env, truthy
+from ..agent.reflex import llama_server_up, load_reflex, reflex_mode
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -27,6 +28,13 @@ class SettingsUpdate(BaseModel):
     agent_symbols: Optional[str] = None
     jev_api_key: Optional[str] = None
     agent_kill: Optional[bool] = None
+    reflex_mode: Optional[str] = None
+    reflex_api_url: Optional[str] = None
+    reflex_api_key: Optional[str] = None
+    llama_server_url: Optional[str] = None
+    vision_api_url: Optional[str] = None
+    vision_api_key: Optional[str] = None
+    vision_model: Optional[str] = None
     clear: list[str] = Field(default_factory=list)
 
 
@@ -57,6 +65,19 @@ def _status() -> dict:
             "symbols": read_env("AGENT_SYMBOLS", "BTCUSDT,ETHUSDT") or "BTCUSDT,ETHUSDT",
             "jev_set": bool(read_env("JEV_API_KEY")),
             "kill": truthy("AGENT_KILL", "false"),
+            "reflex_mode": reflex_mode(),
+            "reflex_active": getattr(load_reflex(), "backend", "unknown"),
+            "llama_url": read_env("LLAMA_SERVER_URL", "http://127.0.0.1:8091") or "http://127.0.0.1:8091",
+            "llama_up": llama_server_up(),
+            "api_url": read_env("REFLEX_API_URL"),
+            "api_key_set": bool(read_env("REFLEX_API_KEY") or read_env("JEV_API_KEY")),
+            "api_key_hint": hint(read_env("REFLEX_API_KEY") or read_env("JEV_API_KEY")),
+        },
+        "vision": {
+            "url": read_env("VISION_API_URL"),
+            "model": read_env("VISION_MODEL"),
+            "key_set": bool(read_env("VISION_API_KEY") or read_env("REFLEX_API_KEY")),
+            "key_hint": hint(read_env("VISION_API_KEY") or read_env("REFLEX_API_KEY")),
         },
     }
 
@@ -84,7 +105,7 @@ def update_settings(payload: SettingsUpdate):
             updates[FIELDS[field][0]] = _flag(value)
             continue
         text = str(value).strip()
-        if field in SECRET_FIELDS and not text:
+        if not text and (field in SECRET_FIELDS or field == "telegram_chat_id"):
             continue
         if len(text) > 500:
             text = text[:500]

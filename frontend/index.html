@@ -4,7 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>股票行情监测台 · A股 / 港股 / 美股</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+    if (/Telegram/i.test(navigator.userAgent)) {
+      var telegramScript = document.createElement('script')
+      telegramScript.src = 'https://telegram.org/js/telegram-web-app.js'
+      telegramScript.async = true
+      document.head.appendChild(telegramScript)
+    }
+  </script>
 </head>
 <body>
   <div id="app"></div>

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..agent.live import market_status, scan
 from ..agent.nightly import review
-from ..agent.reflex import HF_MODEL_ID, load_reflex
+from ..agent.reflex import HF_MODEL_ID, load_reflex, reflex_mode
 from ..agent.risk import MAX_DAILY_LOSS, MAX_DRAWDOWN, MAX_POSITION_FRACTION, armed, kill_switch_on
 from ..database import get_db
 
@@ -22,6 +22,7 @@ def status():
         "armed": armed(),
         "kill_switch": kill_switch_on(),
         "backend": getattr(reflex, "backend", "unknown"),
+        "reflex_mode": reflex_mode(),
         "hf_model": HF_MODEL_ID,
         "markets": markets,
         "live_orders": any(item["ready"] for item in markets.values()) and armed(),

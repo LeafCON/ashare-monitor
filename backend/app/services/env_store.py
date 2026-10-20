@@ -24,6 +24,14 @@ FIELDS: dict[str, tuple[str, bool]] = {
     "agent_symbols": ("AGENT_SYMBOLS", False),
     "jev_api_key": ("JEV_API_KEY", True),
     "agent_kill": ("AGENT_KILL", False),
+    "reflex_mode": ("REFLEX_MODE", False),
+    "reflex_api_url": ("REFLEX_API_URL", False),
+    "reflex_api_key": ("REFLEX_API_KEY", True),
+    "llama_server_url": ("LLAMA_SERVER_URL", False),
+    "reflex_local_model": ("REFLEX_LOCAL_MODEL", False),
+    "vision_api_url": ("VISION_API_URL", False),
+    "vision_api_key": ("VISION_API_KEY", True),
+    "vision_model": ("VISION_MODEL", False),
 }
 
 SECRET_FIELDS = {name for name, (_, secret) in FIELDS.items() if secret}
@@ -42,8 +50,33 @@ def hint(value: str) -> str:
     return "••••" + text[-4:]
 
 
+def _file_values(path: Path | None = None) -> dict[str, str]:
+    target = path or ENV_PATH
+    if not target.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in target.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = _clean(value.strip().strip('"').strip("'"))
+    return values
+
+
+def hydrate_environ(path: Path | None = None) -> None:
+    """Fill empty process variables from the .env file. Never replaces a real value."""
+    for key, value in _file_values(path).items():
+        if value and not _clean(os.getenv(key, "")):
+            os.environ[key] = value
+
+
 def read_env(name: str, default: str = "") -> str:
-    return _clean(os.getenv(name, default))
+    hydrate_environ()
+    current = _clean(os.getenv(name, ""))
+    if current:
+        return current
+    return _clean(default)
 
 
 def truthy(name: str, default: str = "false") -> bool:
