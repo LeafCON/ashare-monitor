@@ -49,6 +49,8 @@ def _load_yaml() -> dict:
 
 
 def runtime_config() -> dict:
+    from ..services.env_store import hydrate_environ
+    hydrate_environ()
     cfg = _load_yaml()
     telegram = cfg.get("telegram") or {}
     alert = cfg.get("alert") or {}

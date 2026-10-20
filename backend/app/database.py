@@ -47,3 +47,7 @@ def init_db():
             conn.exec_driver_sql("ALTER TABLE alert_settings ADD COLUMN pct_threshold FLOAT")
         if "secid" not in columns:
             conn.exec_driver_sql("ALTER TABLE alert_settings ADD COLUMN secid VARCHAR(32)")
+        tx_rows = conn.exec_driver_sql("PRAGMA table_info(transactions)").fetchall()
+        tx_columns = {row[1] for row in tx_rows}
+        if "manual_value" not in tx_columns:
+            conn.exec_driver_sql("ALTER TABLE transactions ADD COLUMN manual_value FLOAT")

@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, desc
 from sqlalchemy.orm import Session
 
 from ..database import get_db, SessionLocal
-from ..models import QuantSignal, QuantSignalOut, QuantSignalSummary, AlertSetting
+from ..models import QuantSignal, QuantSignalOut, QuantSignalSummary, AlertSetting, PriceCache
 
 logger = logging.getLogger("quant")
 
@@ -141,3 +142,174 @@ def refresh_signals(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Manual refresh failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+METRIC_FIELDS = {
+    "pe_ttm": "value",
+    "pb": "value",
+    "roe": "value",
+    "gross_margin": "value",
+    "revenue_growth": "value",
+    "pe_ttm_pct": "percentile",
+    "pb_pct": "percentile",
+    "roe_pct": "percentile",
+    "gross_margin_pct": "percentile",
+    "revenue_growth_pct": "percentile",
+    "change_pct": "price",
+}
+OPS = {
+    "lte": lambda left, right: left <= right,
+    "gte": lambda left, right: left >= right,
+}
+ACTIONS = {"buy", "sell", "watch"}
+
+
+def condition_hit(conditions: list, metrics: dict) -> bool:
+    if not conditions:
+        return False
+    for item in conditions:
+        metric = item.get("metric")
+        op = OPS.get(item.get("op"))
+        if metric not in METRIC_FIELDS or op is None:
+            return False
+        value = metrics.get(metric)
+        if value is None:
+            return False
+        if not op(float(value), float(item.get("value"))):
+            return False
+    return True
+
+
+def _clean_conditions(raw: list) -> list:
+    cleaned = []
+    for item in raw[:4]:
+        metric = str(item.get("metric") or "")
+        op = str(item.get("op") or "")
+        if metric not in METRIC_FIELDS or op not in OPS:
+            continue
+        cleaned.append({"metric": metric, "op": op, "value": float(item.get("value"))})
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="至少写一个条件")
+    return cleaned
+
+
+def _latest_metrics(db: Session) -> dict[str, dict]:
+    found: dict[str, dict] = {}
+    rows = db.query(QuantSignal).order_by(desc(QuantSignal.date)).all()
+    for row in rows:
+        bucket = found.setdefault(row.symbol, {})
+        if row.metric not in bucket and row.value is not None:
+            bucket[row.metric] = row.value
+        pct_key = row.metric + "_pct"
+        if pct_key not in bucket and row.percentile is not None:
+            bucket[pct_key] = row.percentile
+    for price in db.query(PriceCache).all():
+        if price.change_pct is not None:
+            found.setdefault(price.symbol, {})["change_pct"] = price.change_pct
+    return found
+
+
+def _strategy_out(row, metrics: dict[str, dict]) -> dict:
+    import json
+    conditions = json.loads(row.conditions or "[]")
+    target = row.symbol.strip()
+    hits = []
+    if row.enabled:
+        for symbol, values in metrics.items():
+            if target and symbol != target:
+                continue
+            if condition_hit(conditions, values):
+                hits.append(symbol)
+    return {
+        "id": row.id,
+        "name": row.name,
+        "symbol": row.symbol,
+        "action": row.action,
+        "conditions": conditions,
+        "enabled": row.enabled,
+        "hits": hits,
+    }
+
+
+class StrategyText(BaseModel):
+    text: str
+    api_url: str = ""
+    api_model: str = ""
+    api_key: str = ""
+
+
+@router.post("/strategies/from-text")
+def strategy_from_text(payload: StrategyText, db: Session = Depends(get_db)):
+    from ..services.vision_holdings import complete_text, extract_strategy
+    prompt = (
+        "把下面的投资策略说明转成 JSON，只返回 JSON，不要解释。"
+        '{"name":"","symbol":"","action":"buy|sell|watch","conditions":'
+        '[{"metric":"pe_ttm_pct|pb_pct|roe|gross_margin|revenue_growth|change_pct","op":"lte|gte","value":0}]}。'
+        "原文：\n" + (payload.text or "")[:4000]
+    )
+    try:
+        data = extract_strategy(complete_text(prompt, payload.api_url, payload.api_model, payload.api_key))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)[:300]) from exc
+    return create_strategy(StrategyIn(**data), db)
+
+
+class StrategyIn(BaseModel):
+    name: str
+    symbol: str = ""
+    action: str = "watch"
+    conditions: list
+
+
+@router.get("/strategies")
+def list_strategies(db: Session = Depends(get_db)):
+    from ..models import QuantStrategy
+    metrics = _latest_metrics(db)
+    rows = db.query(QuantStrategy).order_by(QuantStrategy.id.desc()).all()
+    return [_strategy_out(row, metrics) for row in rows]
+
+
+@router.post("/strategies", status_code=201)
+def create_strategy(payload: StrategyIn, db: Session = Depends(get_db)):
+    import json
+    from ..models import QuantStrategy
+    from ..symbols import normalize_symbol
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写策略名称")
+    action = payload.action if payload.action in ACTIONS else "watch"
+    symbol = ""
+    if payload.symbol.strip():
+        symbol, _market = normalize_symbol(payload.symbol)
+    row = QuantStrategy(
+        name=name[:80],
+        symbol=symbol,
+        action=action,
+        conditions=json.dumps(_clean_conditions(payload.conditions), ensure_ascii=False),
+        enabled=True,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _strategy_out(row, _latest_metrics(db))
+
+
+@router.delete("/strategies/{strategy_id}", status_code=204)
+def delete_strategy(strategy_id: int, db: Session = Depends(get_db)):
+    from ..models import QuantStrategy
+    row = db.query(QuantStrategy).filter(QuantStrategy.id == strategy_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    db.delete(row)
+    db.commit()
+
+
+@router.put("/strategies/{strategy_id}")
+def toggle_strategy(strategy_id: int, db: Session = Depends(get_db)):
+    from ..models import QuantStrategy
+    row = db.query(QuantStrategy).filter(QuantStrategy.id == strategy_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    row.enabled = not row.enabled
+    db.commit()
+    return _strategy_out(row, _latest_metrics(db))

@@ -60,6 +60,7 @@ class Transaction(Base):
     amount = Column(Float, nullable=False)
     fee = Column(Float, nullable=False, default=0.0)
     notes = Column(Text, nullable=True)
+    manual_value = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utcnow)
 
 
@@ -124,6 +125,19 @@ class QuantSignal(Base):
     value = Column(Float, nullable=True)
     percentile = Column(Float, nullable=True)      # 历史分位（0-100），越低越便宜
     updated_at = Column(DateTime, default=utcnow)
+
+
+class QuantStrategy(Base):
+    """A rule the user wrote in the app. A hit is a signal, not an order."""
+    __tablename__ = "quant_strategies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(80), nullable=False)
+    symbol = Column(String(20), nullable=False, default="")
+    action = Column(String(10), nullable=False, default="buy")
+    conditions = Column(Text, nullable=False, default="[]")
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class AssetSnapshot(Base):
@@ -322,6 +336,7 @@ class HoldingOut(BaseModel):
     currency: str = "USD"
     market_value_usd: float = 0.0
     unrealized_pnl_usd: float = 0.0
+    by_amount: bool = False
 
 
 class PortfolioOut(BaseModel):
