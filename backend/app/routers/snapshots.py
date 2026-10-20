@@ -11,9 +11,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import AssetSnapshot, CashAccount, PriceCache
+from ..models import AssetSnapshot, CashAccount
 from ..services.portfolio_service import get_holdings
 from ..services.exchange_service import get_usd_to_cny
+from ..symbols import quote_currency
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +89,11 @@ def take_daily_snapshot():
 
         if portfolio and portfolio.holdings:
             for h in portfolio.holdings:
-                cached = db.query(PriceCache).filter(PriceCache.symbol == h.symbol).first()
-                if cached and cached.currency == "CNY":
+                currency = quote_currency(h.symbol) or "USD"
+                if currency == "CNY":
                     stock_value_cny += h.market_value
+                elif currency == "HKD":
+                    stock_value_usd += h.market_value / 7.8
                 else:
                     stock_value_usd += h.market_value
                 details_parts.append(f"{h.symbol}:{h.market_value:.0f}")

@@ -15,6 +15,7 @@ from ..models import (
 )
 from ..services.portfolio_service import get_holdings
 from ..services.exchange_service import get_usd_to_cny as _get_usd_to_cny
+from ..symbols import quote_currency
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -57,10 +58,12 @@ def dashboard(db: Session = Depends(get_db)):
             for p in db.query(PriceCache).filter(PriceCache.symbol.in_(holding_symbols)).all()
         }
         for h in portfolio.holdings:
+            listed = quote_currency(h.symbol)
             cached = price_map.get(h.symbol)
-            if cached and cached.currency == "CNY":
+            currency = listed or (cached.currency if cached and cached.currency else "USD")
+            if currency == "CNY":
                 stock_value_cny += h.market_value
-            elif cached and cached.currency == "HKD":
+            elif currency == "HKD":
                 stock_value_usd += h.market_value / 7.8
             else:
                 stock_value_usd += h.market_value
