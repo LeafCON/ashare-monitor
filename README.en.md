@@ -2,9 +2,7 @@
 
 English guide. [中文说明](README.md)
 
-A local desktop monitor for A-shares, Hong Kong stocks, and US stocks. It is based on [kedoupi/portfolio-monitor](https://github.com/kedoupi/portfolio-monitor) (MIT). It tracks a watchlist, shows quotes, and sends a Telegram message when a rule you wrote is hit. Every alert asks you to confirm by hand.
-
-Auto-order is a switch and it is **off** by default. Turning it on does not click a trading app, does not store a trading password, and does not send an order. There is no broker connection, so the switch only records an intent.
+A local desktop monitor for A-shares, Hong Kong stocks, US stocks, and crypto. It tracks a watchlist, shows quotes, and sends a Telegram message when a rule you wrote is hit. Trading keys are entered on the APIs page and stay on this machine. A market with no interface waits and sends no order.
 
 ## What you need
 
@@ -74,7 +72,7 @@ Example:
 
 1. Create a bot with `@BotFather` and copy the token.
 2. Send the bot one message. A personal chat id is available from `@userinfobot`. A group id is usually negative.
-3. Write both values into `.env` and start the app again.
+3. You can also enter them on the APIs page inside the app. They are stored in the local `.env`.
 4. Use **Print only** to check the wording, then **Send to Telegram**.
 
 ## Quotes

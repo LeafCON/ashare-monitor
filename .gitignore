@@ -14,6 +14,8 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/*.log
+data/*.jsonl
+models/*.gguf
 data/*.png
 data/.server.pid
 

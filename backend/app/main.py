@@ -213,7 +213,23 @@ async def lifespan(app: FastAPI):
     price_interval = _CONFIG.get("monitor", {}).get("interval_active", 60)
     scheduler.add_job(update_prices, "interval", seconds=price_interval, id="price_updater",
                       max_instances=1,
-                      next_run_time=datetime.now())  # Run immediately on start
+                      next_run_time=datetime.now())
+
+    def crypto_tick():
+        try:
+            from .agent.live import market_status, scan
+            if not any(item["ready"] for item in market_status().values()):
+                return
+            from .database import SessionLocal
+            db = SessionLocal()
+            try:
+                scan(db)
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.error(f"Trading tick error: {exc}")
+
+    scheduler.add_job(crypto_tick, "interval", seconds=60, id="crypto_tick", max_instances=1)
     
     # Quant signals refresh — daily at 16:00 CST (08:00 UTC)
     def refresh_quant_signals():
@@ -348,7 +364,7 @@ class TelegramAuthMiddleware(BaseHTTPMiddleware):
 app.add_middleware(TelegramAuthMiddleware)
 
 # Register API routers
-from .routers import portfolio, transactions, alerts, prices, dashboard, cash, watchlist, quant, earnings, snapshots, macro, market, search
+from .routers import portfolio, transactions, alerts, prices, dashboard, cash, watchlist, quant, earnings, snapshots, macro, market, search, agent, settings
 app.include_router(dashboard.router)
 app.include_router(portfolio.router)
 app.include_router(transactions.router)
@@ -362,6 +378,8 @@ app.include_router(snapshots.router)
 app.include_router(macro.router)
 app.include_router(market.router)
 app.include_router(search.router)
+app.include_router(agent.router)
+app.include_router(settings.router)
 
 # ── Static files (frontend) ──────────────────────────────────────────────────
 

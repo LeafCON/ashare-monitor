@@ -1,20 +1,33 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
+import { messages } from './i18n.js'
+import Icon from './Icon.vue'
+
+const lang = ref(localStorage.getItem('lang') === 'en' ? 'en' : 'zh')
+const L = computed(() => messages[lang.value])
+function toggleLang() {
+  lang.value = lang.value === 'zh' ? 'en' : 'zh'
+  localStorage.setItem('lang', lang.value)
+  document.documentElement.lang = lang.value === 'en' ? 'en' : 'zh-CN'
+  document.title = L.value.docTitle
+}
 
 const API = ''
 const CURRENCY_SYMBOLS = { 'USD': '$', 'CNY': '¥' }
 const CURRENCY_NAMES = { 'USD': '美元', 'CNY': '人民币' }
-const COLORS = ['#58a6ff', '#3fb950', '#bc8cff', '#d29922', '#f85149', '#79c0ff', '#56d364', '#d2a8ff', '#e3b341', '#ff7b72']
+const COLORS = ['#0071e3', '#1d7f3c', '#6e6e73', '#9a6700', '#c41e3a', '#2997ff', '#30d158', '#86868b', '#bf4800', '#5e5ce6']
 
 const tab = ref('dashboard')
 const loading = ref(false)
 const lastUpdate = ref('')
 const moreMenuOpen = ref(false)
 
-const themeMode = ref(localStorage.getItem('theme') || 'system')
+const themeMode = ref(localStorage.getItem('theme') || 'light')
 const themeLabel = computed(() => {
-  const m = { system: '跟随系统', dark: '暗色模式', light: '明色模式' }
+  const m = lang.value === 'en'
+    ? { system: 'System', dark: 'Dark', light: 'Light' }
+    : { system: '跟随系统', dark: '暗色模式', light: '明色模式' }
   return m[themeMode.value] || '切换主题'
 })
 
@@ -62,6 +75,7 @@ const searchResults = ref([])
 let searchTimer = null
 const holdingForm = ref({ symbol: '', name: '', shares: null, cost_price: null, market: 'cn' })
 const notifyStatus = ref(null)
+const agentStatus = ref(null)
 const showAddAlert = ref(false)
 const showAddTx = ref(false)
 const historyFilter = ref('')
@@ -262,6 +276,67 @@ async function loadCashAccounts() {
 }
 
 // ── Macro Indicators ───────────────────────────────────────────────────────
+async function loadAgent() {
+  try { agentStatus.value = await api('GET', '/api/agent/status') } catch (e) { console.error(e) }
+}
+const venue = ref(null)
+const venueSaving = ref(false)
+const venueNote = ref('')
+const venueForm = ref({
+  telegram_bot_token: '', telegram_chat_id: '', telegram_thread_id: '', alert_dry_run: true,
+  binance_api_key: '', binance_api_secret: '',
+  stock_broker_api_base: '', stock_broker_api_key: '', stock_broker_api_secret: '',
+  stock_broker_markets: 'cn,hk,us', stock_broker_quote_balance: '0',
+  agent_symbols: 'BTCUSDT,ETHUSDT', jev_api_key: '', agent_kill: false,
+})
+function fillVenue(data) {
+  venue.value = data
+  venueForm.value.telegram_chat_id = data.telegram.chat_id || ''
+  venueForm.value.telegram_thread_id = data.telegram.thread_id || ''
+  venueForm.value.alert_dry_run = !!data.telegram.dry_run
+  venueForm.value.stock_broker_api_base = data.broker.base || ''
+  venueForm.value.stock_broker_markets = data.broker.markets || 'cn,hk,us'
+  venueForm.value.stock_broker_quote_balance = data.broker.quote_balance || '0'
+  venueForm.value.agent_symbols = data.agent.symbols || 'BTCUSDT,ETHUSDT'
+  venueForm.value.agent_kill = !!data.agent.kill
+}
+async function loadVenue() {
+  try { fillVenue(await api('GET', '/api/settings')) } catch (e) { venueNote.value = e.message }
+}
+async function saveVenue() {
+  venueSaving.value = true
+  venueNote.value = ''
+  const body = { ...venueForm.value }
+  for (const key of ['telegram_bot_token', 'binance_api_key', 'binance_api_secret', 'stock_broker_api_key', 'stock_broker_api_secret', 'jev_api_key']) {
+    if (!body[key]) delete body[key]
+  }
+  try {
+    fillVenue(await api('PUT', '/api/settings', body))
+    venueForm.value.telegram_bot_token = ''
+    venueForm.value.binance_api_key = ''
+    venueForm.value.binance_api_secret = ''
+    venueForm.value.stock_broker_api_key = ''
+    venueForm.value.stock_broker_api_secret = ''
+    venueForm.value.jev_api_key = ''
+    venueNote.value = L.value.saved
+    loadAgent(); loadAlerts()
+  } catch (e) { venueNote.value = e.message }
+  finally { venueSaving.value = false }
+}
+async function clearVenue(field) {
+  try {
+    fillVenue(await api('PUT', '/api/settings', { clear: [field] }))
+    venueNote.value = L.value.saved
+    loadAgent(); loadAlerts()
+  } catch (e) { venueNote.value = e.message }
+}
+async function runPaperTick() {
+  try {
+    const row = await api('POST', '/api/agent/tick')
+    const hit = (row.results || []).find(item => item.decision)
+    agentStatus.value = { ...(agentStatus.value || {}), ...row, last: hit && hit.decision, order: hit && hit.order }
+  } catch (e) { alert(e.message) }
+}
 async function loadMacro() {
   try { macroIndicators.value = await api('GET', '/api/macro') } catch (e) { console.error('Macro load error:', e) }
 }
@@ -359,9 +434,9 @@ function renderNetWorthChart() {
     yAxis: { type: 'value', axisLabel: { color: t.textColor, formatter: '${value}' }, splitLine: { lineStyle: { color: t.splitLineColor } } },
     series: [{
       type: 'line', data: values, smooth: true,
-      lineStyle: { width: 2, color: '#58a6ff' },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(88,166,255,0.3)' }, { offset: 1, color: 'rgba(88,166,255,0.02)' }] } },
-      itemStyle: { color: '#58a6ff' },
+      lineStyle: { width: 2, color: '#0071e3' },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(0,113,227,0.18)' }, { offset: 1, color: 'rgba(0,113,227,0.02)' }] } },
+      itemStyle: { color: '#0071e3' },
     }],
   }, true)
   netWorthChartInstance.resize()
@@ -418,9 +493,9 @@ function renderQuantPeChart() {
       { type: 'value', name: '分位%', min: 0, max: 100, axisLabel: { color: t.textColor }, splitLine: { show: false } },
     ],
     series: [
-      { name: 'PE(TTM)', type: 'line', data: data.map(d => d[1]), smooth: true, lineStyle: { width: 2 }, itemStyle: { color: '#58a6ff' } },
-      { name: '分位(%)', type: 'line', yAxisIndex: 1, data: pctData.map(d => d[1]), smooth: true, lineStyle: { width: 2, type: 'dashed' }, itemStyle: { color: '#d29922' },
-        markArea: { silent: true, data: [[{ yAxis: 0, itemStyle: { color: 'rgba(63,185,80,0.08)' } }, { yAxis: 20 }], [{ yAxis: 80, itemStyle: { color: 'rgba(248,81,73,0.08)' } }, { yAxis: 100 }]] } },
+      { name: 'PE(TTM)', type: 'line', data: data.map(d => d[1]), smooth: true, lineStyle: { width: 2 }, itemStyle: { color: '#0071e3' } },
+      { name: '分位(%)', type: 'line', yAxisIndex: 1, data: pctData.map(d => d[1]), smooth: true, lineStyle: { width: 2, type: 'dashed' }, itemStyle: { color: '#9a6700' },
+        markArea: { silent: true, data: [[{ yAxis: 0, itemStyle: { color: 'rgba(29,127,60,0.08)' } }, { yAxis: 20 }], [{ yAxis: 80, itemStyle: { color: 'rgba(196,30,58,0.08)' } }, { yAxis: 100 }]] } },
     ],
   }, true)
   quantPeChartInstance.resize()
@@ -428,10 +503,10 @@ function renderQuantPeChart() {
 
 function pctColor(pct) {
   if (pct == null) return ''
-  if (pct < 20) return '#3fb950'
-  if (pct < 50) return '#58a6ff'
-  if (pct < 80) return '#d29922'
-  return '#f85149'
+  if (pct < 20) return '#1d7f3c'
+  if (pct < 50) return '#0071e3'
+  if (pct < 80) return '#9a6700'
+  return '#c41e3a'
 }
 
 function pctLabel(pct) {
@@ -444,10 +519,10 @@ function pctLabel(pct) {
 
 function scoreColor(score) {
   if (score == null) return ''
-  if (score < 30) return '#3fb950'
-  if (score < 50) return '#58a6ff'
-  if (score < 70) return '#d29922'
-  return '#f85149'
+  if (score < 30) return '#1d7f3c'
+  if (score < 50) return '#0071e3'
+  if (score < 70) return '#9a6700'
+  return '#c41e3a'
 }
 
 function scoreLabel(score) {
@@ -474,14 +549,15 @@ function switchTab(t) {
     if (t === 'portfolio') { if (holdingPieInstance) { holdingPieInstance.dispose(); holdingPieInstance = null }; if (holdingPnlInstance) { holdingPnlInstance.dispose(); holdingPnlInstance = null }; renderHoldingPie(); renderHoldingPnl() }
     if (t === 'quant') { loadQuantSignals() }
     if (t === 'earnings') { loadEarnings() }
+    if (t === 'settings') { loadVenue() }
   })
 }
 
 function getChartTheme() {
   const actual = document.documentElement.getAttribute('data-theme') || 'dark'
-  return actual === 'light'
-    ? { bg: 'transparent', textColor: '#1f2328', borderColor: '#d0d7de', splitLineColor: '#e1e4e8', tooltipBg: '#ffffff' }
-    : { bg: 'transparent', textColor: '#e6edf3', borderColor: '#21262d', splitLineColor: '#30363d', tooltipBg: '#161b22' }
+  return actual === 'dark'
+    ? { bg: 'transparent', textColor: '#f5f5f7', borderColor: '#424245', splitLineColor: '#2c2c2e', tooltipBg: '#1d1d1f' }
+    : { bg: 'transparent', textColor: '#1d1d1f', borderColor: '#d2d2d7', splitLineColor: '#e8e8ed', tooltipBg: '#ffffff' }
 }
 
 function renderDashPie() {
@@ -509,7 +585,7 @@ function renderHoldingPnl() {
   if (holdings.length === 0) return
   const sorted = [...holdings].sort((a, b) => (b.unrealized_pnl_usd || b.unrealized_pnl) - (a.unrealized_pnl_usd || a.unrealized_pnl))
   const names = sorted.map(h => h.symbol); const values = sorted.map(h => h.unrealized_pnl_usd || h.unrealized_pnl)
-  const colors = values.map(v => v >= 0 ? '#3fb950' : '#f85149')
+  const colors = values.map(v => v >= 0 ? '#1d7f3c' : '#c41e3a')
   if (!holdingPnlInstance) holdingPnlInstance = echarts.init(holdingPnlChart.value)
   holdingPnlInstance.setOption({
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: t.tooltipBg, borderColor: t.borderColor, textStyle: { color: t.textColor }, formatter: function(params) { const p = params[0]; const h = sorted[p.dataIndex]; return '<b>' + h.symbol + '</b> ' + h.name + '<br/>盈亏: $' + (h.unrealized_pnl_usd || h.unrealized_pnl).toFixed(2) + '<br/>收益率: ' + h.pnl_pct.toFixed(2) + '%' } },
@@ -586,6 +662,22 @@ const filteredHistory = computed(() => { const f = historyFilter.value.toUpperCa
 const usStockPrices = computed(() => prices.value.filter(p => p.currency !== 'CNY' && p.currency !== 'HKD'))
 const hkStockPrices = computed(() => prices.value.filter(p => p.currency === 'HKD'))
 const cnStockPrices = computed(() => prices.value.filter(p => p.currency === 'CNY'))
+const quoteGroups = computed(() => [
+  { key: 'us', title: L.value.liveUs, rows: usStockPrices.value, empty: L.value.noUs },
+  { key: 'hk', title: L.value.liveHk, rows: hkStockPrices.value, empty: L.value.noHk },
+  { key: 'cn', title: L.value.liveCn, rows: cnStockPrices.value, empty: L.value.noCn },
+])
+const navItems = computed(() => [
+  { id: 'dashboard', icon: 'chart', label: L.value.dashboard },
+  { id: 'portfolio', icon: 'case', label: L.value.holdings },
+  { id: 'alerts', icon: 'bell', label: L.value.alerts },
+  { id: 'history', icon: 'clock', label: L.value.history },
+  { id: 'transactions', icon: 'list', label: L.value.trades },
+  { id: 'cash', icon: 'cash', label: L.value.cash },
+  { id: 'earnings', icon: 'calendar', label: L.value.earnings },
+  { id: 'quant', icon: 'wave', label: L.value.quant },
+  { id: 'settings', icon: 'gear', label: L.value.settings },
+])
 function symbolMarket(symbol) {
   if (symbol.endsWith('.HK')) return 'hk'
   if (symbol.endsWith('.SS') || symbol.endsWith('.SZ') || symbol.endsWith('.BJ')) return 'cn'
@@ -634,10 +726,10 @@ function cashPieSegments(ta) {
   const total = ta.total_assets_usd || 1
 
   const items = [
-    { label: '美股', val: '$' + fmtNum(usStock, 0), raw: usStock, color: '#58a6ff' },
-    { label: 'A股', val: '¥' + fmtNum(ta.stock_value_cny || 0, 0), raw: cnStock, color: '#3fb950' },
-    { label: '美元现金', val: '$' + fmtNum(usdCash, 0), raw: usdCash, color: '#d29922' },
-    { label: '人民币现金', val: '¥' + fmtNum(ta.cash_cny || 0, 0), raw: cnyCash, color: '#a371f7' },
+    { label: '美股', val: '$' + fmtNum(usStock, 0), raw: usStock, color: '#0071e3' },
+    { label: 'A股', val: '¥' + fmtNum(ta.stock_value_cny || 0, 0), raw: cnStock, color: '#1d7f3c' },
+    { label: '美元现金', val: '$' + fmtNum(usdCash, 0), raw: usdCash, color: '#9a6700' },
+    { label: '人民币现金', val: '¥' + fmtNum(ta.cash_cny || 0, 0), raw: cnyCash, color: '#6e6e73' },
   ].filter(i => i.raw > 0)
 
   // 计算 SVG arc path
@@ -658,10 +750,14 @@ function cashPieSegments(ta) {
 function fmtDate(d) { if (!d) return '-'; return new Date(d).toLocaleDateString('zh-CN') }
 function fmtTime(d) { if (!d) return '-'; return new Date(d).toLocaleString('zh-CN') }
 function pnlClass(v) { if (v == null || v === 0) return ''; return v > 0 ? 'positive' : 'negative' }
-function alertTypeLabel(t) { return { target_buy: '跌破', target_sell: '突破', price_cross_down: '跌破', price_cross_up: '突破', stop_loss: '止损告警', pct_change: '涨跌幅', big_change: '涨跌幅' }[t] || t }
+function alertTypeLabel(t) {
+  const zh = { target_buy: '跌破', target_sell: '突破', price_cross_down: '跌破', price_cross_up: '突破', stop_loss: '止损告警', pct_change: '涨跌幅', big_change: '涨跌幅' }
+  const en = { target_buy: 'Break below', target_sell: 'Break above', price_cross_down: 'Break below', price_cross_up: 'Break above', stop_loss: 'Stop', pct_change: 'Move', big_change: 'Move' }
+  return (lang.value === 'en' ? en : zh)[t] || t
+}
 function marketCurrSym(m) { return m === 'cn' ? '¥' : m === 'hk' ? 'HK$' : '$' }
 function marketFlag(key) { return { us: '🇺🇸', hk: '🇭🇰', cn: '🇨🇳' }[key] || '' }
-function marketLabel(key) { return { us: '美股', hk: '港股', cn: 'A股' }[key] || key }
+function marketLabel(key) { return L.value[key] || key }
 function marketAlertCount(market) { let c = 0; for (const g of market.stocks) { if (g.primary) c++; c += (g.levels || []).length }; return c }
 
 function closeMoreMenu() { moreMenuOpen.value = false }
@@ -709,8 +805,10 @@ function loadTvScript() {
 let refreshInterval
 onMounted(() => {
   applyTheme(); mql.addEventListener('change', onSystemThemeChange)
+  document.title = L.value.docTitle
+  document.documentElement.lang = lang.value === 'en' ? 'en' : 'zh-CN'
   loadTvScript()
-  loadDashboard(); loadTransactions(); loadAlerts(); loadCashAccounts(); loadMacro(); loadSnapshots()
+  loadDashboard(); loadTransactions(); loadAlerts(); loadCashAccounts(); loadMacro(); loadSnapshots(); loadAgent()
   refreshInterval = setInterval(() => { loadDashboard(); loadMacro() }, 60000)
   window.addEventListener('resize', () => { dashPieInstance?.resize(); holdingPieInstance?.resize(); holdingPnlInstance?.resize(); quantPeChartInstance?.resize(); netWorthChartInstance?.resize() })
   document.addEventListener('click', closeMoreMenu)
@@ -719,33 +817,42 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 </script>
 
 <template>
-  <nav class="nav">
-    <div class="nav-brand">📊 A股 / 港股 / 美股监测台</div>
-    <div class="nav-links">
-      <a :class="{active: tab==='dashboard'}" @click="switchTab('dashboard')"><span class="nav-icon">📈</span><span class="nav-text">看板</span></a>
-      <a :class="{active: tab==='portfolio'}" @click="switchTab('portfolio')"><span class="nav-icon">💰</span><span class="nav-text">持仓</span></a>
-      <a :class="{active: tab==='alerts'}" @click="switchTab('alerts')"><span class="nav-icon">🔔</span><span class="nav-text">监控预警</span></a>
-      <a :class="{active: tab==='history'}" @click="switchTab('history')"><span class="nav-icon">📜</span><span class="nav-text">告警历史</span></a>
-      <a :class="{active: tab==='transactions'}" @click="switchTab('transactions')"><span class="nav-icon">📝</span><span class="nav-text">交易记录</span></a>
-      <a :class="{active: tab==='cash'}" @click="switchTab('cash')"><span class="nav-icon">💵</span><span class="nav-text">现金</span></a>
-      <a :class="{active: tab==='earnings'}" @click="switchTab('earnings')"><span class="nav-icon">📅</span><span class="nav-text">财报</span></a>
-      <a :class="{active: tab==='quant'}" @click="switchTab('quant')"><span class="nav-icon">📊</span><span class="nav-text">量化</span></a>
+  <div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand">{{ L.brand }}</div>
+    <a v-for="item in navItems" :key="item.id" class="side-link" :class="{active: tab===item.id}" @click="switchTab(item.id)">
+      <Icon :name="item.icon" />
+      <span>{{ item.label }}</span>
+    </a>
+    <div class="sidebar-foot">
+      <span class="nav-status"><span v-if="loading" class="loading-dot">●</span><span v-else class="status-ok">●</span><small>{{ lastUpdate }}</small></span>
+      <button class="theme-toggle" @click="toggleLang">{{ L.langBtn }}</button>
+      <button class="theme-toggle icon-btn" @click="cycleTheme" :title="themeLabel">
+        <Icon v-if="themeMode==='system'" name="display" />
+        <Icon v-else-if="themeMode==='dark'" name="moon" />
+        <Icon v-else name="sun" />
+      </button>
     </div>
-    <div class="nav-right">
-      <div class="nav-status"><span v-if="loading" class="loading-dot">●</span><span v-else class="status-ok">●</span><small>{{ lastUpdate }}</small></div>
-      <button class="theme-toggle" @click="cycleTheme" :title="themeLabel"><span v-if="themeMode==='system'">🖥️</span><span v-else-if="themeMode==='dark'">🌙</span><span v-else>☀️</span></button>
-    </div>
-  </nav>
+  </aside>
+  <main class="stage">
 
   <!-- Dashboard -->
   <div v-if="tab==='dashboard'" class="container">
-    <div class="page-header"><h2>📈 实时监控看板</h2><button class="btn-outline btn-sm" @click="loadDashboard();loadMacro()">🔄 刷新</button></div>
-    <div class="card" style="margin-bottom:16px">
-      <div class="form-group"><label>搜索股票并加入自选</label><input v-model="stockQuery" @input="onStockQuery" placeholder="代码或名称，如 600519、00700、腾讯、AAPL"></div>
+    <div class="page-header"><h2>{{ L.dashboard }}</h2><button class="btn-outline btn-sm" @click="loadDashboard();loadMacro()">{{ L.refresh }}</button></div>
+    <div class="card" style="margin-bottom:28px">
+      <div class="form-group"><label>{{ L.searchLabel }}</label><input v-model="stockQuery" @input="onStockQuery" :placeholder="L.searchPh"></div>
       <div v-for="item in searchResults" :key="item.symbol" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border)">
         <span><b class="mono">{{ item.symbol }}</b> {{ item.name }} <small>{{ marketLabel(item.market) }}</small></span>
-        <button type="button" class="btn-primary btn-sm" @click="addSearched(item)">添加</button>
+        <button type="button" class="btn-primary btn-sm" @click="addSearched(item)">{{ L.add }}</button>
       </div>
+    </div>
+    <div class="card agent-card" style="margin-bottom:28px" v-if="agentStatus">
+      <h3>{{ L.agentTitle }}</h3>
+      <p class="hint">{{ L.agentBody }}</p>
+      <p v-for="(item, key) in (agentStatus.markets || {})" :key="key">{{ L[key] || key }}：{{ item.waiting ? L.waiting : L.ready }}</p>
+      <p v-if="agentStatus.last">{{ agentStatus.last.action }} / {{ agentStatus.last.regime }} / {{ agentStatus.order && agentStatus.order.reason }}</p>
+      <button class="btn-primary btn-sm" @click="switchTab('settings')">{{ L.openSettings }}</button>
+      <button class="btn-outline btn-sm" @click="runPaperTick">{{ L.paperTick }}</button>
     </div>
 
     <!-- Macro Indicators Bar -->
@@ -759,83 +866,30 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
     </div>
 
     <div class="summary-cards" v-if="totalAssets">
-      <div class="summary-card highlight"><div class="summary-icon">💎</div><div class="summary-content"><div class="summary-label">总资产</div><div class="summary-value">${{ fmtNum(totalAssets.total_assets_usd) }}</div><div class="summary-sub" v-if="totalAssets.usd_to_cny">≈ ¥{{ fmtNum(totalAssets.total_assets_usd * totalAssets.usd_to_cny) }}<span class="fx-rate">汇率 {{ totalAssets.usd_to_cny }}</span></div></div></div>
-      <div class="summary-card"><div class="summary-icon">💵</div><div class="summary-content"><div class="summary-label">美元现金</div><div class="summary-value">${{ fmtNum(totalAssets.cash_usd) }}</div></div></div>
-      <div class="summary-card"><div class="summary-icon">💴</div><div class="summary-content"><div class="summary-label">人民币现金</div><div class="summary-value">¥{{ fmtNum(totalAssets.cash_cny) }}</div></div></div>
-      <div class="summary-card"><div class="summary-icon">📊</div><div class="summary-content"><div class="summary-label">股票市值</div><div class="summary-value">${{ fmtNum(totalAssets.stock_value_usd) }}</div></div></div>
+      <div class="summary-card highlight"><div class="summary-icon">💎</div><div class="summary-content"><div class="summary-label">{{ L.totalAssets }}</div><div class="summary-value">${{ fmtNum(totalAssets.total_assets_usd) }}</div><div class="summary-sub" v-if="totalAssets.usd_to_cny">≈ ¥{{ fmtNum(totalAssets.total_assets_usd * totalAssets.usd_to_cny) }}<span class="fx-rate">{{ L.fx }} {{ totalAssets.usd_to_cny }}</span></div></div></div>
+      <div class="summary-card"><div class="summary-icon">💵</div><div class="summary-content"><div class="summary-label">{{ L.usdCash }}</div><div class="summary-value">${{ fmtNum(totalAssets.cash_usd) }}</div></div></div>
+      <div class="summary-card"><div class="summary-icon">💴</div><div class="summary-content"><div class="summary-label">{{ L.cnyCash }}</div><div class="summary-value">¥{{ fmtNum(totalAssets.cash_cny) }}</div></div></div>
+      <div class="summary-card"><div class="summary-icon">📊</div><div class="summary-content"><div class="summary-label">{{ L.stockValue }}</div><div class="summary-value">${{ fmtNum(totalAssets.stock_value_usd) }}</div></div></div>
     </div>
     <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><h3>🇺🇸 美股实时价格</h3><span class="badge">{{ usStockPrices.length }}</span></div>
-        <!-- Desktop table -->
-        <table class="table"><thead><tr><th>代码</th><th>名称</th><th>价格</th><th>涨跌</th><th>涨跌幅</th><th></th></tr></thead><tbody><tr v-for="p in usStockPrices" :key="p.symbol"><td class="mono stock-code">{{ p.symbol }}</td><td>{{ p.name }}</td><td class="mono">{{ fmtPrice(p.price, p.currency) }}</td><td :class="pnlClass(p.change)">{{ fmtChange(p.change) }}</td><td><span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span></td><td><button class="btn-chart" @click="openChartModal(p.symbol, p.currency)" title="查看K线">📈</button></td></tr></tbody></table>
-        <!-- Mobile card list -->
-        <div class="mobile-card-list">
-          <div v-for="p in usStockPrices" :key="'m-us-'+p.symbol" class="mobile-stock-card">
-            <div class="mobile-stock-card-header">
-              <div><span class="stock-symbol-lg">{{ p.symbol }}</span><span class="stock-name-sm">{{ p.name }}</span></div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span>
-                <button class="btn-chart-mobile" @click="openChartModal(p.symbol, p.currency)">📈 图表</button>
-              </div>
-            </div>
-            <div class="mobile-stock-card-row">
-              <span class="label">价格</span>
-              <span class="mobile-stock-card-price" :class="pnlClass(p.change)">{{ fmtPrice(p.price, p.currency) }}</span>
-            </div>
-            <div class="mobile-stock-card-row">
-              <span class="label">涨跌</span>
-              <span class="value" :class="pnlClass(p.change)">{{ fmtChange(p.change) }}</span>
-            </div>
-          </div>
-        </div>
-        <div v-if="usStockPrices.length===0" class="empty">暂无美股数据</div>
-        <div class="card-divider"></div>
-        <div class="card-header" style="margin-top:8px"><h3>🇭🇰 港股实时价格</h3><span class="badge">{{ hkStockPrices.length }}</span></div>
-        <table class="table"><thead><tr><th>代码</th><th>名称</th><th>价格</th><th>涨跌</th><th>涨跌幅</th><th></th></tr></thead><tbody><tr v-for="p in hkStockPrices" :key="p.symbol"><td class="mono stock-code">{{ p.symbol }}</td><td>{{ p.name }}</td><td class="mono">{{ fmtPrice(p.price, p.currency) }}</td><td :class="pnlClass(p.change)">{{ fmtChange(p.change) }}</td><td><span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span></td><td><button class="btn-chart" @click="openChartModal(p.symbol, p.currency)" title="查看K线">📈</button></td></tr></tbody></table>
-        <div class="mobile-card-list">
-          <div v-for="p in hkStockPrices" :key="'m-hk-'+p.symbol" class="mobile-stock-card">
-            <div class="mobile-stock-card-header">
-              <div><span class="stock-symbol-lg">{{ p.symbol }}</span><span class="stock-name-sm">{{ p.name }}</span></div>
-              <span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span>
-            </div>
-            <div class="mobile-stock-card-row"><span class="label">价格</span><span class="mobile-stock-card-price" :class="pnlClass(p.change)">{{ fmtPrice(p.price, p.currency) }}</span></div>
-          </div>
-        </div>
-        <div v-if="hkStockPrices.length===0" class="empty">暂无港股数据</div>
-        <div class="card-divider"></div>
-        <div class="card-header" style="margin-top:8px"><h3>🇨🇳 A股实时价格</h3><span class="badge">{{ cnStockPrices.length }}</span></div>
-        <!-- Desktop table -->
-        <table class="table"><thead><tr><th>代码</th><th>名称</th><th>价格</th><th>涨跌</th><th>涨跌幅</th><th></th></tr></thead><tbody><tr v-for="p in cnStockPrices" :key="p.symbol"><td class="mono stock-code">{{ p.symbol }}</td><td>{{ p.name }}</td><td class="mono">{{ fmtPrice(p.price, p.currency) }}</td><td :class="pnlClass(p.change)">{{ fmtChange(p.change) }}</td><td><span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span></td><td><button class="btn-chart" @click="openChartModal(p.symbol, p.currency)" title="查看K线">📈</button></td></tr></tbody></table>
-        <!-- Mobile card list -->
-        <div class="mobile-card-list">
-          <div v-for="p in cnStockPrices" :key="'m-cn-'+p.symbol" class="mobile-stock-card">
-            <div class="mobile-stock-card-header">
-              <div><span class="stock-symbol-lg">{{ p.symbol }}</span><span class="stock-name-sm">{{ p.name }}</span></div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span>
-                <button class="btn-chart-mobile" @click="openChartModal(p.symbol, p.currency)">📈 图表</button>
-              </div>
-            </div>
-            <div class="mobile-stock-card-row">
-              <span class="label">价格</span>
-              <span class="mobile-stock-card-price" :class="pnlClass(p.change)">{{ fmtPrice(p.price, p.currency) }}</span>
-            </div>
-            <div class="mobile-stock-card-row">
-              <span class="label">涨跌</span>
-              <span class="value" :class="pnlClass(p.change)">{{ fmtChange(p.change) }}</span>
-            </div>
-          </div>
-        </div>
-        <div v-if="cnStockPrices.length===0" class="empty">暂无A股数据</div>
+      <div class="card quote-card">
+        <section v-for="group in quoteGroups" :key="group.key" class="quote-block">
+          <div class="card-header"><h3>{{ group.title }}</h3><span class="badge">{{ group.rows.length }}</span></div>
+          <button v-for="p in group.rows" :key="group.key + p.symbol" type="button" class="quote-row" @click="openChartModal(p.symbol, p.currency)">
+            <span class="quote-id"><span class="quote-symbol">{{ p.symbol }}</span><span class="quote-name">{{ p.name }}</span></span>
+            <span class="quote-price" :class="pnlClass(p.change)">{{ fmtPrice(p.price, p.currency) }}</span>
+            <span class="pct-badge" :class="pnlClass(p.change_pct)">{{ fmtPct(p.change_pct) }}</span>
+          </button>
+          <div v-if="group.rows.length===0" class="empty">{{ group.empty }}</div>
+        </section>
       </div>
       <div>
-        <div class="card"><h3>💰 资产配置</h3><div ref="dashPieChart" class="chart-box" style="height:280px"></div></div>
-        <div class="card mt" v-if="snapshotHistory.length >= 2"><h3>📈 总资产趋势</h3><div ref="netWorthChartRef" class="chart-box" style="height:250px"></div></div>
-        <div class="card mt"><h3>💵 现金账户</h3><div v-for="acc in cashAccounts" :key="acc.currency" class="cash-item"><div class="cash-currency">{{ CURRENCY_NAMES[acc.currency] || acc.currency }}</div><div class="cash-balance">{{ CURRENCY_SYMBOLS[acc.currency] || '$' }}{{ fmtNum(acc.balance) }}</div></div><div v-if="cashAccounts.length===0" class="empty">暂无</div></div>
-        <div class="card mt"><h3>🔔 最近告警</h3><div v-for="a in recentAlerts" :key="a.id" class="alert-item"><div class="alert-meta"><span class="mono alert-symbol">{{ a.symbol }}</span> <span class="alert-type-badge" :class="'alert-type-'+a.alert_type">{{ alertTypeLabel(a.alert_type) }}</span> <span class="alert-time">{{ fmtTime(a.triggered_at) }}</span></div><div class="alert-msg">{{ a.message }}</div></div><div v-if="recentAlerts.length===0" class="empty">暂无</div></div>
-        <div class="card mt"><h3>📝 最近交易</h3>
-          <table class="table" v-if="recentTx.length>0"><thead><tr><th>日期</th><th>代码</th><th>操作</th><th>价格</th><th>股数</th></tr></thead><tbody><tr v-for="t in recentTx" :key="t.id"><td>{{ fmtDate(t.date) }}</td><td class="mono stock-code">{{ t.symbol }}</td><td><span :class="t.action==='buy'?'tag-buy':'tag-sell'">{{ t.action==='buy'?'买入':'卖出' }}</span></td><td class="mono">{{ fmtPrice(t.price) }}</td><td>{{ t.shares }}</td></tr></tbody></table>
+        <div class="card"><h3>{{ L.allocation }}</h3><div ref="dashPieChart" class="chart-box" style="height:280px"></div></div>
+        <div class="card mt" v-if="snapshotHistory.length >= 2"><h3>{{ L.trend }}</h3><div ref="netWorthChartRef" class="chart-box" style="height:250px"></div></div>
+        <div class="card mt"><h3>{{ L.cashAccounts }}</h3><div v-for="acc in cashAccounts" :key="acc.currency" class="cash-item"><div class="cash-currency">{{ CURRENCY_NAMES[acc.currency] || acc.currency }}</div><div class="cash-balance">{{ CURRENCY_SYMBOLS[acc.currency] || '$' }}{{ fmtNum(acc.balance) }}</div></div><div v-if="cashAccounts.length===0" class="empty">{{ L.none }}</div></div>
+        <div class="card mt"><h3>{{ L.recentAlerts }}</h3><div v-for="a in recentAlerts" :key="a.id" class="alert-item"><div class="alert-meta"><span class="mono alert-symbol">{{ a.symbol }}</span> <span class="alert-type-badge" :class="'alert-type-'+a.alert_type">{{ alertTypeLabel(a.alert_type) }}</span> <span class="alert-time">{{ fmtTime(a.triggered_at) }}</span></div><div class="alert-msg">{{ a.message }}</div></div><div v-if="recentAlerts.length===0" class="empty">{{ L.none }}</div></div>
+        <div class="card mt"><h3>{{ L.recentTrades }}</h3>
+          <table class="table" v-if="recentTx.length>0"><thead><tr><th>日期</th><th>{{ L.code }}</th><th>操作</th><th>{{ L.price }}</th><th>{{ L.shares }}</th></tr></thead><tbody><tr v-for="t in recentTx" :key="t.id"><td>{{ fmtDate(t.date) }}</td><td class="mono stock-code">{{ t.symbol }}</td><td><span :class="t.action==='buy'?'tag-buy':'tag-sell'">{{ t.action==='buy'?'买入':'卖出' }}</span></td><td class="mono">{{ fmtPrice(t.price) }}</td><td>{{ t.shares }}</td></tr></tbody></table>
           <div class="mobile-card-list" v-if="recentTx.length>0">
             <div v-for="t in recentTx" :key="'m-rtx-'+t.id" class="mobile-stock-card">
               <div class="mobile-stock-card-header">
@@ -853,17 +907,17 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
   <!-- Portfolio -->
   <div v-if="tab==='portfolio'" class="container">
-    <div class="page-header"><h2>💰 持仓管理</h2><button class="btn-outline btn-sm" @click="loadPortfolio();loadDashboard()">🔄 刷新</button></div>
-    <div class="card form-card" style="margin-bottom:16px">
+    <div class="page-header"><h2>{{ L.holdingsTitle }}</h2><button class="btn-outline btn-sm" @click="loadPortfolio();loadDashboard()">{{ L.refresh }}</button></div>
+    <div class="card form-card" style="margin-bottom:28px">
       <form @submit.prevent="saveHolding" class="form-grid">
-        <div class="form-group"><label>代码</label><input v-model="holdingForm.symbol" placeholder="600519、00700 或 AAPL" required></div>
-        <div class="form-group"><label>名称</label><input v-model="holdingForm.name" placeholder="贵州茅台"></div>
-        <div class="form-group"><label>市场</label><select v-model="holdingForm.market"><option value="cn">A股</option><option value="hk">港股</option><option value="us">美股</option></select></div>
-        <div class="form-group"><label>股数</label><input v-model.number="holdingForm.shares" type="number" min="0" step="1" required></div>
-        <div class="form-group"><label>成本价</label><input v-model.number="holdingForm.cost_price" type="number" min="0" step="0.01" required></div>
-        <div class="form-group form-actions"><button type="submit" class="btn-primary">保存持仓</button></div>
+        <div class="form-group"><label>{{ L.code }}</label><input v-model="holdingForm.symbol" placeholder="600519、00700 或 AAPL" required></div>
+        <div class="form-group"><label>{{ L.name }}</label><input v-model="holdingForm.name" placeholder="贵州茅台"></div>
+        <div class="form-group"><label>{{ L.market }}</label><select v-model="holdingForm.market"><option value="cn">{{ L.cn }}</option><option value="hk">{{ L.hk }}</option><option value="us">{{ L.us }}</option></select></div>
+        <div class="form-group"><label>{{ L.shares }}</label><input v-model.number="holdingForm.shares" type="number" min="0" step="1" required></div>
+        <div class="form-group"><label>{{ L.cost }}</label><input v-model.number="holdingForm.cost_price" type="number" min="0" step="0.01" required></div>
+        <div class="form-group form-actions"><button type="submit" class="btn-primary">{{ L.saveHolding }}</button></div>
       </form>
-      <p class="hint">直接记录持仓，不扣现金。同一代码再次保存会按新的股数和成本价覆盖。</p>
+      <p class="hint">{{ L.holdingHint }}</p>
     </div>
     <div class="summary-cards" v-if="portfolio">
       <div class="summary-card"><div class="summary-icon">💰</div><div class="summary-content"><div class="summary-label">总成本</div><div class="summary-value">${{ fmtNum(portfolio.total_cost) }}</div></div></div>
@@ -872,8 +926,8 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
     </div>
     <div class="grid-2">
       <div>
-        <div class="card"><div class="card-header"><h3>🇺🇸 美股持仓</h3><span class="badge">{{ usHoldings.length }}</span></div>
-          <table class="table" v-if="usHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in usHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">${{ h.avg_cost.toFixed(2) }}</td><td class="mono">${{ h.current_price.toFixed(2) }}</td><td class="mono">${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">修改</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">删除</button></td></tr></tbody></table>
+        <div class="card"><div class="card-header"><h3>{{ L.usHold }}</h3><span class="badge">{{ usHoldings.length }}</span></div>
+          <table class="table" v-if="usHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in usHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">${{ h.avg_cost.toFixed(2) }}</td><td class="mono">${{ h.current_price.toFixed(2) }}</td><td class="mono">${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
           <div class="mobile-card-list" v-if="usHoldings.length>0">
             <div v-for="h in usHoldings" :key="'m-ush-'+h.symbol" class="mobile-stock-card">
               <div class="mobile-stock-card-header">
@@ -892,12 +946,12 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
               </div>
             </div>
           </div>
-          <div v-if="usHoldings.length===0" class="empty">暂无美股持仓</div></div>
-        <div class="card mt"><div class="card-header"><h3>🇭🇰 港股持仓</h3><span class="badge">{{ hkHoldings.length }}</span></div>
-          <table class="table" v-if="hkHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in hkHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">HK${{ h.avg_cost.toFixed(2) }}</td><td class="mono">HK${{ h.current_price.toFixed(2) }}</td><td class="mono">HK${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">HK${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">修改</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">删除</button></td></tr></tbody></table>
-          <div v-if="hkHoldings.length===0" class="empty">暂无港股持仓</div></div>
-        <div class="card mt"><div class="card-header"><h3>🇨🇳 A股持仓</h3><span class="badge">{{ cnHoldings.length }}</span></div>
-          <table class="table" v-if="cnHoldings.length>0"><thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th><th>收益率</th></tr></thead><tbody><tr v-for="h in cnHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">¥{{ h.avg_cost.toFixed(2) }}</td><td class="mono">¥{{ h.current_price.toFixed(2) }}</td><td class="mono">¥{{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">¥{{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">修改</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">删除</button></td></tr></tbody></table>
+          <div v-if="usHoldings.length===0" class="empty">{{ L.noUsHold }}</div></div>
+        <div class="card mt"><div class="card-header"><h3>{{ L.hkHold }}</h3><span class="badge">{{ hkHoldings.length }}</span></div>
+          <table class="table" v-if="hkHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in hkHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">HK${{ h.avg_cost.toFixed(2) }}</td><td class="mono">HK${{ h.current_price.toFixed(2) }}</td><td class="mono">HK${{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">HK${{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
+          <div v-if="hkHoldings.length===0" class="empty">{{ L.noHkHold }}</div></div>
+        <div class="card mt"><div class="card-header"><h3>{{ L.cnHold }}</h3><span class="badge">{{ cnHoldings.length }}</span></div>
+          <table class="table" v-if="cnHoldings.length>0"><thead><tr><th>{{ L.code }}</th><th>{{ L.name }}</th><th>{{ L.shares }}</th><th>{{ L.costCol }}</th><th>{{ L.last }}</th><th>{{ L.value }}</th><th>{{ L.pnl }}</th><th>{{ L.returnPct }}</th></tr></thead><tbody><tr v-for="h in cnHoldings" :key="h.symbol"><td class="mono stock-code">{{ h.symbol }}</td><td>{{ h.name }}</td><td>{{ h.shares }}</td><td class="mono">¥{{ h.avg_cost.toFixed(2) }}</td><td class="mono">¥{{ h.current_price.toFixed(2) }}</td><td class="mono">¥{{ fmtNum(h.market_value) }}</td><td :class="pnlClass(h.unrealized_pnl)" class="mono">¥{{ fmtNum(h.unrealized_pnl) }}</td><td><span class="pct-badge" :class="pnlClass(h.pnl_pct)">{{ fmtPct(h.pnl_pct) }}</span> <button class="btn-outline btn-sm" @click="editHolding(h)">{{ L.edit }}</button> <button class="btn-danger-sm" @click="removeHolding(h.symbol)">{{ L.remove }}</button></td></tr></tbody></table>
           <div class="mobile-card-list" v-if="cnHoldings.length>0">
             <div v-for="h in cnHoldings" :key="'m-cnh-'+h.symbol" class="mobile-stock-card">
               <div class="mobile-stock-card-header">
@@ -916,11 +970,11 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
               </div>
             </div>
           </div>
-          <div v-if="cnHoldings.length===0" class="empty">暂无A股持仓</div></div>
+          <div v-if="cnHoldings.length===0" class="empty">{{ L.noCnHold }}</div></div>
       </div>
       <div>
-        <div class="card"><h3>📊 持仓占比</h3><div ref="holdingPieChart" class="chart-box" style="height:300px"></div></div>
-        <div class="card mt"><h3>📈 持仓盈亏</h3><div ref="holdingPnlChart" class="chart-box" style="height:300px"></div></div>
+        <div class="card"><h3>{{ L.holdMix }}</h3><div ref="holdingPieChart" class="chart-box" style="height:300px"></div></div>
+        <div class="card mt"><h3>{{ L.holdPnl }}</h3><div ref="holdingPnlChart" class="chart-box" style="height:300px"></div></div>
       </div>
     </div>
   </div>
@@ -928,38 +982,38 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
   <!-- Monitoring & Alerts -->
   <div v-if="tab==='alerts'" class="container">
     <div class="page-header">
-      <h2>🔔 监控预警</h2>
+      <h2>{{ L.alerts }}</h2>
       <div class="page-actions">
         <div class="view-toggle">
-          <button :class="['view-toggle-btn', alertViewMode==='zone' ? 'active' : '']" @click="setAlertViewMode('zone')">📋 分区视图</button>
-          <button :class="['view-toggle-btn', alertViewMode==='card' ? 'active' : '']" @click="setAlertViewMode('card')">🃏 卡片视图</button>
+          <button :class="['view-toggle-btn', alertViewMode==='zone' ? 'active' : '']" @click="setAlertViewMode('zone')">📋 {{ L.zone }}</button>
+          <button :class="['view-toggle-btn', alertViewMode==='card' ? 'active' : '']" @click="setAlertViewMode('card')">🃏 {{ L.card }}</button>
         </div>
-        <button class="btn-outline btn-sm" @click="testAlert('dry')" :disabled="testingAlert">只打印</button>
-        <button class="btn-outline btn-sm" @click="testAlert('live')" :disabled="testingAlert">真发 Telegram</button>
-        <button class="btn-primary btn-sm" @click="showAddAlert=!showAddAlert">{{ showAddAlert ? '收起' : '➕ 添加' }}</button>
+        <button class="btn-outline btn-sm" @click="testAlert('dry')" :disabled="testingAlert">{{ L.printOnly }}</button>
+        <button class="btn-outline btn-sm" @click="testAlert('live')" :disabled="testingAlert">{{ L.sendTg }}</button>
+        <button class="btn-primary btn-sm" @click="showAddAlert=!showAddAlert">{{ showAddAlert ? L.collapse : L.add }}</button>
       </div>
     </div>
-    <div class="card" style="margin-bottom:16px" v-if="notifyStatus">
-      <div>策略命中后会发送 Telegram，和「真发 Telegram」是同一个接口。没填写跌破价、突破价、止损价或涨跌幅阈值的股票只显示行情，不会告警。Token {{ notifyStatus.telegram_configured ? '已配置' : '未配置' }} · 冷却 {{ notifyStatus.cooldown_minutes }} 分钟 · 每日上限 {{ notifyStatus.max_per_day }}</div>
+    <div class="card" style="margin-bottom:28px" v-if="notifyStatus">
+      <div>{{ L.strategyNote }} Token {{ notifyStatus.telegram_configured ? L.tokenOn : L.tokenOff }} · {{ L.cooldown }} {{ notifyStatus.cooldown_minutes }} {{ L.minutes }} · {{ L.dailyCap }} {{ notifyStatus.max_per_day }}</div>
       <label style="display:inline-flex;align-items:center;gap:8px;margin-top:8px">
         <input type="checkbox" :checked="notifyStatus.auto_order" @change="toggleAutoOrder">
-        自动下单（默认关）
+        {{ L.autoOrder }}
       </label>
-      <div style="opacity:.8;margin-top:6px">关闭时只提醒，文案带「请手动确认」，需要你自己下单。打开开关也不会点击交易软件，不会保存交易密码；当前没有券商接口，所以不会提交委托。</div>
+      <div style="opacity:.8;margin-top:6px">{{ L.autoHint }}</div>
     </div>
-    <div class="card form-card" v-show="showAddAlert" style="margin-bottom:16px">
+    <div class="card form-card" v-show="showAddAlert" style="margin-bottom:28px">
       <form @submit.prevent="saveAlert" class="form-grid">
-        <div class="form-group"><label>代码</label><input v-model="alertForm.symbol" placeholder="600519" required></div>
-        <div class="form-group"><label>名称</label><input v-model="alertForm.name" placeholder="贵州茅台"></div>
-        <div class="form-group"><label>市场</label><select v-model="alertForm.market"><option value="cn">A股</option><option value="hk">港股</option><option value="us">美股</option></select></div>
-        <div class="form-group"><label>档位</label><select v-model="alertForm.is_primary"><option :value="true">主档</option><option :value="false">子档</option></select></div>
-        <div class="form-group" v-show="!alertForm.is_primary"><label>标签</label><input v-model="alertForm.label" placeholder="子档标签"></div>
-        <div class="form-group"><label>跌破价</label><input v-model.number="alertForm.target_buy" type="number" step="0.01"></div>
-        <div class="form-group"><label>突破价</label><input v-model.number="alertForm.target_sell" type="number" step="0.01"></div>
-        <div class="form-group"><label>止损价</label><input v-model.number="alertForm.stop_loss" type="number" step="0.01"></div>
-        <div class="form-group"><label>涨跌幅阈值(%)</label><input v-model.number="alertForm.pct_threshold" type="number" step="0.1" placeholder="留空用全局 3"></div>
-        <div class="form-group"><label>金额</label><input v-model="alertForm.amount" placeholder="$15,000"></div>
-        <div class="form-group form-actions"><button type="submit" class="btn-primary">保存</button></div>
+        <div class="form-group"><label>{{ L.code }}</label><input v-model="alertForm.symbol" placeholder="600519" required></div>
+        <div class="form-group"><label>{{ L.name }}</label><input v-model="alertForm.name" placeholder="贵州茅台"></div>
+        <div class="form-group"><label>{{ L.market }}</label><select v-model="alertForm.market"><option value="cn">{{ L.cn }}</option><option value="hk">{{ L.hk }}</option><option value="us">{{ L.us }}</option></select></div>
+        <div class="form-group"><label>{{ L.level }}</label><select v-model="alertForm.is_primary"><option :value="true">{{ L.primary }}</option><option :value="false">{{ L.sub }}</option></select></div>
+        <div class="form-group" v-show="!alertForm.is_primary"><label>{{ L.name }}</label><input v-model="alertForm.label" :placeholder="L.sub"></div>
+        <div class="form-group"><label>{{ L.below }}</label><input v-model.number="alertForm.target_buy" type="number" step="0.01"></div>
+        <div class="form-group"><label>{{ L.above }}</label><input v-model.number="alertForm.target_sell" type="number" step="0.01"></div>
+        <div class="form-group"><label>{{ L.stop }}</label><input v-model.number="alertForm.stop_loss" type="number" step="0.01"></div>
+        <div class="form-group"><label>{{ L.pct }}</label><input v-model.number="alertForm.pct_threshold" type="number" step="0.1" :placeholder="L.pctPh"></div>
+        <div class="form-group"><label>{{ L.amount }}</label><input v-model="alertForm.amount" placeholder="$15,000"></div>
+        <div class="form-group form-actions"><button type="submit" class="btn-primary">{{ L.save }}</button></div>
       </form>
     </div>
 
@@ -1078,7 +1132,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
   <!-- Alert History -->
   <div v-if="tab==='history'" class="container">
-    <div class="page-header"><h2>📜 告警历史</h2><div class="page-actions"><input v-model="historyFilter" placeholder="筛选代码..." class="filter-input"></div></div>
+    <div class="page-header"><h2>{{ L.history }}</h2><div class="page-actions"><input v-model="historyFilter" :placeholder="L.filterCode" class="filter-input"></div></div>
     <div class="card" v-if="filteredHistory.length>0">
       <div class="history-timeline">
         <div v-for="a in filteredHistory" :key="a.id" class="history-item"><div class="history-dot" :class="a.sent?'dot-sent':'dot-failed'"></div><div class="history-content"><div class="history-header"><span class="mono stock-code">{{ a.symbol }}</span> <span class="alert-type-badge" :class="'alert-type-'+a.alert_type">{{ alertTypeLabel(a.alert_type) }}</span> <span class="history-price mono">${{ a.price.toFixed(2) }}</span> <span :class="a.sent?'tag-buy':'tag-sell'" class="history-status">{{ a.sent?'已推送':'失败' }}</span></div><div class="history-msg">{{ a.message }}</div><div class="history-time">{{ fmtTime(a.triggered_at) }}</div></div></div>
@@ -1089,10 +1143,10 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
   <!-- Transactions -->
   <div v-if="tab==='transactions'" class="container">
-    <div class="page-header"><h2>📝 交易记录</h2><div class="page-actions"><a href="/api/transactions/export/csv" class="btn-outline btn-sm" target="_blank">📥 CSV</a><button class="btn-primary btn-sm" @click="showAddTx=!showAddTx">{{ showAddTx?'收起':'➕ 添加' }}</button></div></div>
+    <div class="page-header"><h2>{{ L.trades }}</h2><div class="page-actions"><a href="/api/transactions/export/csv" class="btn-outline btn-sm" target="_blank">CSV</a><button class="btn-primary btn-sm" @click="showAddTx=!showAddTx">{{ showAddTx? L.collapse : L.add }}</button></div></div>
 
     <!-- 添加表单 -->
-    <div class="card form-card" v-show="showAddTx" style="margin-bottom:16px">
+    <div class="card form-card" v-show="showAddTx" style="margin-bottom:28px">
       <form @submit.prevent="addTransaction" class="form-grid">
         <div class="form-group"><label>代码</label><input v-model="txForm.symbol" placeholder="GOOGL" required></div>
         <div class="form-group"><label>名称</label><input v-model="txForm.name" placeholder="谷歌"></div>
@@ -1173,7 +1227,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
   <!-- Cash -->
   <div v-if="tab==='cash'" class="container">
-    <div class="page-header"><h2>💵 现金账户管理</h2></div>
+    <div class="page-header"><h2>{{ L.cash }}</h2></div>
 
     <!-- 顶部：饼图 + 仓位进度条 -->
     <div class="cash-overview" v-if="totalAssets">
@@ -1225,7 +1279,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
     </div>
 
     <!-- 现金账户余额 -->
-    <div class="summary-cards" v-if="cashAccounts.length>0" style="margin-bottom:16px">
+    <div class="summary-cards" v-if="cashAccounts.length>0" style="margin-bottom:28px">
       <div class="summary-card highlight" v-for="acc in cashAccounts" :key="acc.currency">
         <div class="summary-icon">{{ acc.currency==='USD'?'💵':'💴' }}</div>
         <div class="summary-content">
@@ -1237,7 +1291,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
     </div>
 
     <!-- 调整表单 -->
-    <div class="card form-card" style="margin-bottom:16px">
+    <div class="card form-card" style="margin-bottom:28px">
       <h3>调整现金余额</h3>
       <form @submit.prevent="adjustCash" class="form-grid">
         <div class="form-group"><label>币种</label><select v-model="cashForm.currency"><option value="USD">美元</option><option value="CNY">人民币</option></select></div>
@@ -1269,7 +1323,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
   <!-- ═══════ Earnings Calendar ═══════ -->
   <div v-if="tab==='earnings'" class="container">
-    <div class="page-header"><h2>📅 财报日历</h2><button class="btn-outline btn-sm" @click="loadEarnings" :disabled="earningsLoading">{{ earningsLoading ? '加载中...' : '🔄 刷新' }}</button></div>
+    <div class="page-header"><h2>{{ L.earnings }}</h2><button class="btn-outline btn-sm" @click="loadEarnings" :disabled="earningsLoading">{{ earningsLoading ? '...' : L.refresh }}</button></div>
 
     <!-- 未来财报：倒计时卡片 -->
     <div class="section-title">📆 即将发布</div>
@@ -1319,8 +1373,8 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
               <!-- 渐变填充 -->
               <defs>
                 <linearGradient :id="'sg-'+group.symbol" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" :stop-color="epsSparkline(group.records).trend==='up' ? '#3fb950' : '#f85149'" stop-opacity="0.3"/>
-                  <stop offset="100%" :stop-color="epsSparkline(group.records).trend==='up' ? '#3fb950' : '#f85149'" stop-opacity="0"/>
+                  <stop offset="0%" :stop-color="epsSparkline(group.records).trend==='up' ? '#1d7f3c' : '#c41e3a'" stop-opacity="0.3"/>
+                  <stop offset="100%" :stop-color="epsSparkline(group.records).trend==='up' ? '#1d7f3c' : '#c41e3a'" stop-opacity="0"/>
                 </linearGradient>
               </defs>
               <!-- 填充区域 -->
@@ -1332,7 +1386,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
               <path
                 :d="epsSparkline(group.records).path"
                 fill="none"
-                :stroke="epsSparkline(group.records).trend==='up' ? '#3fb950' : '#f85149'"
+                :stroke="epsSparkline(group.records).trend==='up' ? '#1d7f3c' : '#c41e3a'"
                 stroke-width="1.5"
                 stroke-linejoin="round"
                 stroke-linecap="round"
@@ -1342,7 +1396,7 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
                 :cx="epsSparkline(group.records).last[0]"
                 :cy="epsSparkline(group.records).last[1]"
                 r="2.5"
-                :fill="epsSparkline(group.records).trend==='up' ? '#3fb950' : '#f85149'"
+                :fill="epsSparkline(group.records).trend==='up' ? '#1d7f3c' : '#c41e3a'"
               />
             </svg>
           </div>
@@ -1449,9 +1503,9 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
   <!-- ═══════ Quant Signals ═══════ -->
   <div v-if="tab==='quant'" class="container">
     <div class="page-header">
-      <h2>📊 量化信号</h2>
+      <h2>{{ L.quant }}</h2>
       <div class="page-actions">
-        <button class="btn-outline btn-sm" @click="loadQuantSignals" :disabled="quantLoading">🔄 刷新</button>
+        <button class="btn-outline btn-sm" @click="loadQuantSignals" :disabled="quantLoading">{{ L.refresh }}</button>
         <button class="btn-primary btn-sm" @click="refreshQuant" :disabled="quantRefreshing">{{ quantRefreshing ? '更新中...' : '📡 拉取最新数据' }}</button>
       </div>
     </div>
@@ -1495,16 +1549,70 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
     </div>
 
     <div v-if="!quantLoading && quantSignals.length===0" class="card">
-      <div class="empty">暂无量化信号数据，点击「📡 拉取最新数据」开始</div>
+      <div class="empty">暂无量化信号数据，点击「拉取最新数据」开始</div>
     </div>
+  </div>
+
+  <div v-if="tab==='settings'" class="container">
+    <div class="page-header"><h2>{{ L.settingsTitle }}</h2></div>
+    <p class="settings-lead">{{ L.settingsLead }}</p>
+    <form class="settings-form" @submit.prevent="saveVenue">
+      <section class="card settings-card">
+        <h3>{{ L.telegramSection }}</h3>
+        <p class="hint"><span class="state-pill" :class="venue && venue.telegram.token_set ? 'on' : ''">{{ venue && venue.telegram.token_set ? L.configured : L.notConfigured }}</span> {{ venue && venue.telegram.token_hint }}</p>
+        <div class="form-grid">
+          <div class="form-group"><label>{{ L.botToken }}</label><input v-model="venueForm.telegram_bot_token" type="password" autocomplete="off" :placeholder="venue && venue.telegram.token_set ? venue.telegram.token_hint : ''"></div>
+          <div class="form-group"><label>{{ L.chatId }}</label><input v-model="venueForm.telegram_chat_id" autocomplete="off"></div>
+          <div class="form-group"><label>{{ L.threadId }}</label><input v-model="venueForm.telegram_thread_id" autocomplete="off" :placeholder="L.threadHint"></div>
+        </div>
+        <label class="check-row"><input type="checkbox" v-model="venueForm.alert_dry_run"> {{ L.dryRun }}</label>
+        <button v-if="venue && venue.telegram.token_set" type="button" class="text-action" @click="clearVenue('telegram_bot_token')">{{ L.clearKey }}</button>
+      </section>
+      <section class="card settings-card">
+        <h3>{{ L.cryptoSection }}</h3>
+        <p class="hint"><span class="state-pill" :class="venue && venue.binance.key_set && venue.binance.secret_set ? 'on' : ''">{{ venue && venue.binance.key_set && venue.binance.secret_set ? L.ready : L.waiting }}</span></p>
+        <div class="form-grid">
+          <div class="form-group"><label>{{ L.binanceKey }}</label><input v-model="venueForm.binance_api_key" type="password" autocomplete="off" :placeholder="venue && venue.binance.key_hint"></div>
+          <div class="form-group"><label>{{ L.binanceSecret }}</label><input v-model="venueForm.binance_api_secret" type="password" autocomplete="off"></div>
+        </div>
+        <button v-if="venue && venue.binance.key_set" type="button" class="text-action" @click="clearVenue('binance_api_key')">{{ L.clearKey }} Key</button>
+        <button v-if="venue && venue.binance.secret_set" type="button" class="text-action" @click="clearVenue('binance_api_secret')">{{ L.clearKey }} Secret</button>
+      </section>
+      <section class="card settings-card">
+        <h3>{{ L.brokerSection }}</h3>
+        <p class="hint"><span class="state-pill" :class="venue && venue.broker.base && venue.broker.key_set && venue.broker.secret_set ? 'on' : ''">{{ venue && venue.broker.base && venue.broker.key_set && venue.broker.secret_set ? L.ready : L.waiting }}</span></p>
+        <div class="form-grid">
+          <div class="form-group"><label>{{ L.brokerBase }}</label><input v-model="venueForm.stock_broker_api_base" placeholder="https://"></div>
+          <div class="form-group"><label>{{ L.brokerKey }}</label><input v-model="venueForm.stock_broker_api_key" type="password" autocomplete="off" :placeholder="venue && venue.broker.key_hint"></div>
+          <div class="form-group"><label>{{ L.brokerSecret }}</label><input v-model="venueForm.stock_broker_api_secret" type="password" autocomplete="off"></div>
+          <div class="form-group"><label>{{ L.brokerMarkets }}</label><input v-model="venueForm.stock_broker_markets" placeholder="cn,hk,us"></div>
+          <div class="form-group"><label>{{ L.quoteBalance }}</label><input v-model="venueForm.stock_broker_quote_balance"></div>
+        </div>
+      </section>
+      <section class="card settings-card">
+        <h3>{{ L.agentSection }}</h3>
+        <div class="form-grid">
+          <div class="form-group"><label>{{ L.agentSymbols }}</label><input v-model="venueForm.agent_symbols" placeholder="BTCUSDT,ETHUSDT"></div>
+          <div class="form-group"><label>{{ L.jevKey }}</label><input v-model="venueForm.jev_api_key" type="password" autocomplete="off"></div>
+        </div>
+        <label class="check-row"><input type="checkbox" v-model="venueForm.agent_kill"> {{ L.killSwitch }}</label>
+      </section>
+      <div class="settings-actions">
+        <button class="btn-primary" type="submit" :disabled="venueSaving">{{ L.saveSettings }}</button>
+        <span class="hint" v-if="venueNote">{{ venueNote }}</span>
+      </div>
+    </form>
+  </div>
+
+  </main>
   </div>
 
   <!-- ═══════ TradingView Chart Modal ═══════ -->
   <div v-show="showChartModal" class="tv-modal-overlay" @click.self="closeChartModal" @keydown.esc="closeChartModal">
     <div class="tv-modal">
       <div class="tv-modal-header">
-        <span class="tv-modal-title">📈 {{ chartSymbol }}</span>
-        <button class="tv-modal-close" @click="closeChartModal">✕</button>
+        <span class="tv-modal-title">{{ chartSymbol }}</span>
+        <button class="tv-modal-close icon-btn" @click="closeChartModal" aria-label="Close"><Icon name="close" /></button>
       </div>
       <div ref="tvContainer" class="tv-modal-body"></div>
     </div>
@@ -1512,16 +1620,17 @@ onUnmounted(() => { clearInterval(refreshInterval); mql.removeEventListener('cha
 
   <!-- ═══════ Mobile Bottom Navigation Bar ═══════ -->
   <nav class="mobile-bottom-nav">
-    <a :class="{active: tab==='dashboard'}" @click="switchTab('dashboard')"><span class="tab-icon">📈</span>看板</a>
-    <a :class="{active: tab==='portfolio'}" @click="switchTab('portfolio')"><span class="tab-icon">💰</span>持仓</a>
-    <a :class="{active: tab==='alerts'}" @click="switchTab('alerts')"><span class="tab-icon">🔔</span>预警</a>
-    <a :class="{active: moreMenuOpen || ['quant','earnings','history','transactions','cash'].includes(tab)}" @click.stop="moreMenuOpen=!moreMenuOpen"><span class="tab-icon">⋯</span>更多</a>
+    <a :class="{active: tab==='dashboard'}" @click="switchTab('dashboard')"><Icon name="chart" /><span>{{ L.dashboard }}</span></a>
+    <a :class="{active: tab==='portfolio'}" @click="switchTab('portfolio')"><Icon name="case" /><span>{{ L.holdings }}</span></a>
+    <a :class="{active: tab==='alerts'}" @click="switchTab('alerts')"><Icon name="bell" /><span>{{ L.alertsShort }}</span></a>
+    <a :class="{active: tab==='settings'}" @click="switchTab('settings')"><Icon name="gear" /><span>{{ L.settings }}</span></a>
+    <a :class="{active: moreMenuOpen || ['quant','earnings','history','transactions','cash'].includes(tab)}" @click.stop="moreMenuOpen=!moreMenuOpen"><Icon name="list" /><span>{{ L.more }}</span></a>
     <div class="mobile-more-menu" v-show="moreMenuOpen" @click.stop>
-      <a @click="switchTab('earnings');moreMenuOpen=false"><span class="more-icon">📅</span>财报</a>
-      <a @click="switchTab('quant');moreMenuOpen=false"><span class="more-icon">📊</span>量化</a>
-      <a @click="switchTab('history');moreMenuOpen=false"><span class="more-icon">📜</span>告警历史</a>
-      <a @click="switchTab('transactions');moreMenuOpen=false"><span class="more-icon">📝</span>交易记录</a>
-      <a @click="switchTab('cash');moreMenuOpen=false"><span class="more-icon">💵</span>现金</a>
+      <a @click="switchTab('earnings');moreMenuOpen=false"><Icon name="calendar" />{{ L.earnings }}</a>
+      <a @click="switchTab('quant');moreMenuOpen=false"><Icon name="wave" />{{ L.quant }}</a>
+      <a @click="switchTab('history');moreMenuOpen=false"><Icon name="clock" />{{ L.history }}</a>
+      <a @click="switchTab('transactions');moreMenuOpen=false"><Icon name="list" />{{ L.trades }}</a>
+      <a @click="switchTab('cash');moreMenuOpen=false"><Icon name="cash" />{{ L.cash }}</a>
     </div>
   </nav>
 </template>
