@@ -13,7 +13,7 @@ from ..models import (
     Transaction, PriceCache, TradeAction,
     HoldingOut, PortfolioOut,
 )
-
+from ..symbols import quote_currency
 from .exchange_service import get_usd_to_cny
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,11 @@ def get_holdings(db: Session) -> PortfolioOut:
         # Get latest cached price
         cached = db.query(PriceCache).filter(PriceCache.symbol == symbol).first()
         current_price = cached.price if cached else 0.0
-        if cached and cached.currency:
+        listed = quote_currency(symbol)
+        if listed:
+            currency = listed
+        elif cached and cached.currency:
             currency = cached.currency
-        elif symbol.endswith((".SS", ".SZ", ".BJ")):
-            currency = "CNY"
-        elif symbol.endswith(".HK"):
-            currency = "HKD"
         else:
             currency = "USD"
 

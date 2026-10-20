@@ -77,3 +77,13 @@ def hk_secid(symbol: str) -> str | None:
 
 def market_group(market: str | None) -> str:
     return {"cn": "A股", "hk": "港股", "us": "美股"}.get((market or "").lower(), "美股")
+
+
+def quote_currency(symbol: str) -> str | None:
+    """Currency implied by the stored symbol. US tickers are not guessed here."""
+    text = (symbol or "").upper()
+    if text.endswith((".SS", ".SZ", ".BJ")):
+        return "CNY"
+    if text.endswith(".HK"):
+        return "HKD"
+    return None

@@ -839,10 +839,19 @@ function getChartTheme() {
 
 function renderDashPie() {
   if (!dashPieChart.value || !totalAssets.value) return
-  const t = getChartTheme(); const ta = totalAssets.value; const rate = ta.usd_to_cny || 7.2
-  const data = [{ name: '美股', value: Math.round(ta.stock_value_usd) }, { name: 'A股', value: Math.round((ta.stock_value_cny || 0) / rate) }, { name: '美元现金', value: Math.round(ta.cash_usd) }, { name: '人民币现金', value: Math.round((ta.cash_cny || 0) / rate) }].filter(d => d.value > 0)
+  const t = getChartTheme()
+  const rate = Number(totalAssets.value.usd_to_cny) || 7.2
+  const book = boardBook()
+  const data = [
+    book.cny ? { name: 'A股', value: book.cny / rate, native: '¥' + fmtNum(book.cny) } : null,
+    book.hkd ? { name: '港股', value: book.hkd / 7.8, native: 'HK$' + fmtNum(book.hkd) } : null,
+    book.usd ? { name: '美股', value: book.usd, native: '$' + fmtNum(book.usd) } : null,
+    book.cashUsd ? { name: '美元现金', value: book.cashUsd, native: '$' + fmtNum(book.cashUsd) } : null,
+    book.cashCny ? { name: '人民币现金', value: book.cashCny / rate, native: '¥' + fmtNum(book.cashCny) } : null,
+  ].filter(item => item && item.value > 0)
+  if (!data.length) return
   if (!dashPieInstance) dashPieInstance = echarts.init(dashPieChart.value)
-  dashPieInstance.setOption({ tooltip: { trigger: 'item', formatter: '{b}: ${c} ({d}%)', backgroundColor: t.tooltipBg, borderColor: t.borderColor, textStyle: { color: t.textColor } }, legend: { bottom: 0, textStyle: { color: t.textColor, fontSize: 12 } }, color: COLORS, series: [{ type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'], avoidLabelOverlap: true, itemStyle: { borderRadius: 6, borderColor: t.bg === 'transparent' ? undefined : t.bg, borderWidth: 2 }, label: { show: true, color: t.textColor, formatter: '{b}\n${c}', fontSize: 12 }, emphasis: { label: { fontSize: 14, fontWeight: 'bold' } }, data }] }, true)
+  dashPieInstance.setOption({ tooltip: { trigger: 'item', formatter: (p) => p.name + ': ' + p.data.native + ' (' + p.percent + '%)', backgroundColor: t.tooltipBg, borderColor: t.borderColor, textStyle: { color: t.textColor } }, legend: { bottom: 0, textStyle: { color: t.textColor, fontSize: 12 } }, color: COLORS, series: [{ type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'], avoidLabelOverlap: true, itemStyle: { borderRadius: 6, borderColor: t.bg === 'transparent' ? undefined : t.bg, borderWidth: 2 }, label: { show: true, color: t.textColor, formatter: '{b}\n{d}%', fontSize: 12 }, emphasis: { label: { fontSize: 14, fontWeight: 'bold' } }, data }] }, true)
   dashPieInstance.resize()
 }
 
@@ -1012,6 +1021,37 @@ function currencySymbol(code) {
 function moneyText(code, amount) {
   return currencySymbol(code) + fmtNum(amount)
 }
+function boardBook() {
+  const rate = Number(totalAssets.value?.usd_to_cny) || 7.2
+  const cashUsd = Number(totalAssets.value?.cash_usd || 0)
+  const cashCny = Number(totalAssets.value?.cash_cny || 0)
+  let cny = 0, usd = 0, hkd = 0
+  for (const h of portfolio.value?.holdings || []) {
+    const code = holdingCurrency(h)
+    const value = Number(h.market_value) || 0
+    if (code === 'CNY') cny += value
+    else if (code === 'HKD') hkd += value
+    else usd += value
+  }
+  return { rate, cashUsd, cashCny, cny, usd, hkd }
+}
+const boardCards = computed(() => {
+  const book = boardBook()
+  const { rate, cashUsd, cashCny, cny, usd, hkd } = book
+  const totalUsd = usd + hkd / 7.8 + cny / rate + cashUsd + cashCny / rate
+  const totalCny = totalUsd * rate
+  const onlyCny = (cny > 0 || cashCny > 0) && usd === 0 && hkd === 0 && cashUsd === 0
+  const stockParts = []
+  if (cny) stockParts.push('¥' + fmtNum(cny))
+  if (hkd) stockParts.push('HK$' + fmtNum(hkd))
+  if (usd) stockParts.push('$' + fmtNum(usd))
+  return {
+    total: onlyCny ? ('¥' + fmtNum(cny + cashCny)) : ('$' + fmtNum(totalUsd)),
+    totalAlt: onlyCny ? ('≈ $' + fmtNum(totalUsd)) : ('≈ ¥' + fmtNum(totalCny)),
+    stock: stockParts[0] || '$0.00',
+    stockAlt: stockParts.slice(1).join(' · '),
+  }
+})
 const holdingSummary = computed(() => {
   const list = portfolio.value?.holdings || []
   const blank = { cost: '—', value: '—', pnl: '—', pct: 0, costAlt: '', valueAlt: '', pnlAlt: '' }
@@ -1214,10 +1254,10 @@ onUnmounted(() => { window.__nativeDrop = null; clearInterval(refreshInterval); 
     </div>
 
     <div class="summary-cards" v-if="totalAssets">
-      <div class="summary-card highlight"><div class="summary-icon">💎</div><div class="summary-content"><div class="summary-label">{{ L.totalAssets }}</div><div class="summary-value">${{ fmtNum(totalAssets.total_assets_usd) }}</div><div class="summary-sub" v-if="totalAssets.usd_to_cny">≈ ¥{{ fmtNum(totalAssets.total_assets_usd * totalAssets.usd_to_cny) }}<span class="fx-rate">{{ L.fx }} {{ totalAssets.usd_to_cny }}</span></div></div></div>
-      <div class="summary-card"><div class="summary-icon">💵</div><div class="summary-content"><div class="summary-label">{{ L.usdCash }}</div><div class="summary-value">${{ fmtNum(totalAssets.cash_usd) }}</div></div></div>
-      <div class="summary-card"><div class="summary-icon">💴</div><div class="summary-content"><div class="summary-label">{{ L.cnyCash }}</div><div class="summary-value">¥{{ fmtNum(totalAssets.cash_cny) }}</div></div></div>
-      <div class="summary-card"><div class="summary-icon">📊</div><div class="summary-content"><div class="summary-label">{{ L.stockValue }}</div><div class="summary-value">${{ fmtNum(totalAssets.stock_value_usd) }}</div></div></div>
+      <div class="summary-card highlight"><div class="summary-content"><div class="summary-label">{{ L.totalAssets }}</div><div class="summary-value">{{ boardCards.total }}</div><div class="summary-sub">{{ boardCards.totalAlt }}<span class="fx-rate">{{ L.fx }} {{ totalAssets.usd_to_cny }}</span></div></div></div>
+      <div class="summary-card"><div class="summary-content"><div class="summary-label">{{ L.usdCash }}</div><div class="summary-value">${{ fmtNum(totalAssets.cash_usd) }}</div></div></div>
+      <div class="summary-card"><div class="summary-content"><div class="summary-label">{{ L.cnyCash }}</div><div class="summary-value">¥{{ fmtNum(totalAssets.cash_cny) }}</div></div></div>
+      <div class="summary-card"><div class="summary-content"><div class="summary-label">{{ L.stockValue }}</div><div class="summary-value">{{ boardCards.stock }}</div><div class="summary-sub" v-if="boardCards.stockAlt">{{ boardCards.stockAlt }}</div></div></div>
     </div>
     <div class="grid-2">
       <div class="card quote-card">
