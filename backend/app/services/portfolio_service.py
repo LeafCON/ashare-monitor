@@ -33,6 +33,7 @@ def get_holdings(db: Session) -> PortfolioOut:
         "total_cost": 0.0,
         "name": "",
         "manual_value": None,
+        "ref_price": None,
     })
 
     for tx in transactions:
@@ -44,6 +45,8 @@ def get_holdings(db: Session) -> PortfolioOut:
             pos["shares"] += tx.shares
             if getattr(tx, "manual_value", None) is not None:
                 pos["manual_value"] = tx.manual_value
+            if getattr(tx, "ref_price", None):
+                pos["ref_price"] = tx.ref_price
         elif tx.action == TradeAction.sell:
             if pos["shares"] > 0:
                 # Reduce cost proportionally
@@ -73,11 +76,22 @@ def get_holdings(db: Session) -> PortfolioOut:
             currency = "USD"
 
         by_amount = pos["manual_value"] is not None
+        live = cached.price if cached and cached.price else None
+        quote_at = cached.updated_at.isoformat() if cached and cached.updated_at else None
+        follows_market = False
         if by_amount:
-            market_value = float(pos["manual_value"])
-            current_price = market_value
+            ref = pos.get("ref_price")
+            if ref and live and ref > 0:
+                market_value = float(pos["manual_value"]) * (float(live) / float(ref))
+                current_price = float(live)
+                follows_market = True
+            else:
+                market_value = float(pos["manual_value"])
+                current_price = float(live or market_value)
         else:
+            current_price = float(live or 0)
             market_value = current_price * pos["shares"]
+            follows_market = bool(live)
         if not by_amount:
             avg_cost = pos["total_cost"] / pos["shares"] if pos["shares"] > 0 else 0.0
         else:
@@ -110,6 +124,9 @@ def get_holdings(db: Session) -> PortfolioOut:
             market_value_usd=round(market_value_usd, 2),
             unrealized_pnl_usd=round(unrealized_pnl_usd, 2),
             by_amount=by_amount,
+            follows_market=follows_market,
+            quote_at=quote_at,
+            quote_change_pct=cached.change_pct if cached else None,
         ))
 
         total_cost += pos["total_cost"]

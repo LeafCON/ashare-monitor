@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import (
-    PriceCache, AlertHistory, Transaction, CashAccount,
+    PriceCache, AlertHistory, AlertSetting, Transaction, CashAccount, MarketType,
     DashboardOut, PriceOut, AlertHistoryOut, TransactionOut, CashAccountOut, TotalAssetsOut,
 )
 from ..services.portfolio_service import get_holdings
@@ -25,6 +25,33 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 def dashboard(db: Session = Depends(get_db)):
     """Get dashboard data: prices, portfolio, cash accounts, total assets, recent alerts, recent transactions."""
     prices = db.query(PriceCache).order_by(PriceCache.symbol).all()
+    cache = {row.symbol: row for row in prices}
+    listed: list[PriceOut] = []
+    seen: set[str] = set()
+    alerts = db.query(AlertSetting).filter(AlertSetting.is_primary == True).all()  # noqa: E712
+    for alert in alerts:
+        seen.add(alert.symbol)
+        cached = cache.get(alert.symbol)
+        if alert.market == MarketType.hk:
+            currency = "HKD"
+        elif alert.market == MarketType.cn:
+            currency = "CNY"
+        else:
+            currency = quote_currency(alert.symbol) or (cached.currency if cached and cached.currency else "USD")
+        listed.append(PriceOut(
+            symbol=alert.symbol,
+            name=(alert.name or (cached.name if cached else "") or alert.symbol),
+            price=cached.price if cached else None,
+            previous_close=cached.previous_close if cached else None,
+            change=cached.change if cached else None,
+            change_pct=cached.change_pct if cached else None,
+            volume=cached.volume if cached else None,
+            currency=currency,
+            updated_at=cached.updated_at if cached else None,
+        ))
+    for cached in prices:
+        if cached.symbol not in seen:
+            listed.append(PriceOut.model_validate(cached))
     recent_alerts = (
         db.query(AlertHistory)
         .order_by(AlertHistory.triggered_at.desc())
@@ -58,9 +85,9 @@ def dashboard(db: Session = Depends(get_db)):
             for p in db.query(PriceCache).filter(PriceCache.symbol.in_(holding_symbols)).all()
         }
         for h in portfolio.holdings:
-            listed = quote_currency(h.symbol)
+            forced = quote_currency(h.symbol)
             cached = price_map.get(h.symbol)
-            currency = listed or (cached.currency if cached and cached.currency else "USD")
+            currency = forced or (cached.currency if cached and cached.currency else "USD")
             if currency == "CNY":
                 stock_value_cny += h.market_value
             elif currency == "HKD":
@@ -86,7 +113,7 @@ def dashboard(db: Session = Depends(get_db)):
     )
 
     return DashboardOut(
-        prices=[PriceOut.model_validate(p) for p in prices],
+        prices=listed,
         portfolio=portfolio,
         cash_accounts=[CashAccountOut.model_validate(c) for c in cash_accounts],
         total_assets=total_assets_data,

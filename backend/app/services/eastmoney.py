@@ -20,10 +20,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0",
 }
 
-SESSION = requests.Session()
-SESSION.trust_env = False
-SESSION.headers.update(HEADERS)
-
 # Verified from push2 on this machine: SPX / NDX / DJIA / UDI return prices.
 KNOWN_SECIDS = {
     "SPX": "100.SPX",
@@ -47,6 +43,23 @@ HK_WATCHLIST = [
 ]
 
 
+def _get(url: str, params: dict) -> requests.Response:
+    """Try the system proxy first. This network drops a direct connection to Eastmoney."""
+    last = None
+    for trust in (True, False):
+        session = requests.Session()
+        session.trust_env = trust
+        session.headers.update(HEADERS)
+        try:
+            response = session.get(url, params=params, headers=HEADERS, timeout=8)
+            response.raise_for_status()
+            return response
+        except Exception as exc:
+            last = exc
+            logger.warning("Eastmoney request failed (proxy=%s): %s", trust, exc)
+    raise last
+
+
 def fetch_secids(pairs: list[tuple[str, str]]) -> dict[str, dict[str, Any]]:
     """pairs are (symbol, secid). Returns quotes keyed by symbol."""
     if not pairs:
@@ -54,13 +67,10 @@ def fetch_secids(pairs: list[tuple[str, str]]) -> dict[str, dict[str, Any]]:
     secids = ",".join(secid for _, secid in pairs)
     by_secid = {secid: symbol for symbol, secid in pairs}
     try:
-        response = SESSION.get(
+        response = _get(
             "https://push2.eastmoney.com/api/qt/ulist.np/get",
-            params={"fltt": "2", "fields": "f2,f3,f4,f12,f14", "secids": secids},
-            headers=HEADERS,
-            timeout=12,
+            {"fltt": "2", "fields": "f2,f3,f4,f12,f14", "secids": secids},
         )
-        response.raise_for_status()
         diff = ((response.json().get("data") or {}).get("diff")) or []
     except Exception as exc:
         logger.warning("Eastmoney quote failed: %s", exc)
@@ -115,13 +125,10 @@ def search_symbols(query: str, limit: int = 8) -> list[dict[str, str]]:
     if not text:
         return []
     try:
-        response = SESSION.get(
+        response = _get(
             "https://searchadapter.eastmoney.com/api/suggest/get",
-            params={"input": text, "type": "14", "count": str(max(limit * 2, 8))},
-            headers=HEADERS,
-            timeout=12,
+            {"input": text, "type": "14", "count": str(max(limit * 2, 8))},
         )
-        response.raise_for_status()
         rows = ((response.json().get("QuotationCodeTable") or {}).get("Data")) or []
     except Exception as exc:
         logger.warning("Symbol search failed: %s", exc)

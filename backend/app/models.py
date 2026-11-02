@@ -61,6 +61,7 @@ class Transaction(Base):
     fee = Column(Float, nullable=False, default=0.0)
     notes = Column(Text, nullable=True)
     manual_value = Column(Float, nullable=True)
+    ref_price = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utcnow)
 
 
@@ -337,6 +338,9 @@ class HoldingOut(BaseModel):
     market_value_usd: float = 0.0
     unrealized_pnl_usd: float = 0.0
     by_amount: bool = False
+    follows_market: bool = False
+    quote_at: Optional[str] = None
+    quote_change_pct: Optional[float] = None
 
 
 class PortfolioOut(BaseModel):
@@ -352,13 +356,13 @@ class PortfolioOut(BaseModel):
 class PriceOut(BaseModel):
     symbol: str
     name: str
-    price: float
-    previous_close: Optional[float]
-    change: Optional[float]
-    change_pct: Optional[float]
-    volume: Optional[float]
+    price: Optional[float] = None
+    previous_close: Optional[float] = None
+    change: Optional[float] = None
+    change_pct: Optional[float] = None
+    volume: Optional[float] = None
     currency: str
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

@@ -149,24 +149,41 @@ def add_to_watchlist(payload: WatchlistAddRequest, db: Session = Depends(get_db)
         db.commit()
         db.refresh(alert)
 
-    from ..services.price_service import fetch_prices_batch
-    from ..models import PriceCache
-    from datetime import datetime, timezone
-    quote_map = fetch_prices_batch([alert.symbol], {alert.symbol: alert.secid} if alert.secid else None)
-    quote = quote_map.get(alert.symbol) or {}
-    if quote.get("price") is not None:
-        db.merge(PriceCache(
-            symbol=alert.symbol,
-            name=alert.name or quote.get("name") or alert.symbol,
-            price=quote["price"],
-            previous_close=quote.get("previous_close"),
-            change=quote.get("change"),
-            change_pct=quote.get("change_pct"),
-            volume=quote.get("volume"),
-            currency=quote.get("currency") or ("CNY" if alert.market == MarketType.cn else "HKD" if alert.market == MarketType.hk else "USD"),
-            updated_at=datetime.now(timezone.utc),
-        ))
-        db.commit()
+    symbol = alert.symbol
+    name = alert.name
+    market = alert.market
+    secid = alert.secid
+
+    def _fill_quote():
+        from datetime import datetime, timezone
+        from ..database import SessionLocal
+        from ..models import PriceCache
+        from ..services.price_service import fetch_prices_batch
+        session = SessionLocal()
+        try:
+            quote_map = fetch_prices_batch([symbol], {symbol: secid} if secid else None)
+            quote = quote_map.get(symbol) or {}
+            if quote.get("price") is None:
+                return
+            session.merge(PriceCache(
+                symbol=symbol,
+                name=name or quote.get("name") or symbol,
+                price=quote["price"],
+                previous_close=quote.get("previous_close"),
+                change=quote.get("change"),
+                change_pct=quote.get("change_pct"),
+                volume=quote.get("volume"),
+                currency=quote.get("currency") or ("CNY" if market == MarketType.cn else "HKD" if market == MarketType.hk else "USD"),
+                updated_at=datetime.now(timezone.utc),
+            ))
+            session.commit()
+        except Exception:
+            session.rollback()
+        finally:
+            session.close()
+
+    import threading
+    threading.Thread(target=_fill_quote, name="watchlist-quote", daemon=True).start()
 
     # Attach cached price if available
     cached = db.query(PriceCache).filter(PriceCache.symbol == alert.symbol).first()

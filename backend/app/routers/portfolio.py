@@ -78,6 +78,11 @@ def set_holding(payload: HoldingInput, db: Session = Depends(get_db)):
         symbol = symbol[:20]
     name = (payload.name or "").strip()
     secid = KNOWN_SECIDS.get(symbol) or (f"116.{symbol[:-3]}" if symbol.endswith(".HK") else None)
+    ref_price = None
+    if manual_value is not None:
+        quote = fetch_price(symbol)
+        if quote and not quote.get("error") and quote.get("price"):
+            ref_price = float(quote["price"])
     db.query(Transaction).filter(Transaction.symbol == symbol).delete()
     if shares > 0:
         db.add(Transaction(
@@ -92,10 +97,10 @@ def set_holding(payload: HoldingInput, db: Session = Depends(get_db)):
             fee=0,
             notes=note,
             manual_value=manual_value,
+            ref_price=ref_price,
         ))
         _remember_symbol(db, symbol, name, market, secid)
-        if manual_value is None:
-            _cache_price(db, symbol, name)
+        _cache_price(db, symbol, name)
     db.commit()
     return get_holdings(db)
 

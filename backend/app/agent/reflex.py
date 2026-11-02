@@ -256,6 +256,46 @@ class OpenAIReflex:
         return ReflexDecision.model_validate(raw)
 
 
+def deep_reread(snapshot: MarketSnapshot) -> ReflexDecision | None:
+    """One extra call on the configured API when the gate asks for a deeper read."""
+    if reflex_mode() != "api":
+        return None
+    from ..services.vision_holdings import complete_text
+    prompt = (
+        "这是一次深度重读。先用一句话写空头理由，然后只返回一个 JSON，不要其他文字。"
+        "Keys: regime (trending|mean_reverting|high_vol|crisis), direction (long|short|neutral), "
+        "direction_confidence (0-1), toxic_flow (0-1), setup_quality (0-3 integer), "
+        "probability (0-1), action (buy|sell|hold). State: "
+        + snapshot.model_dump_json()
+    )
+    try:
+        text = complete_text(prompt)
+    except Exception:
+        return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    raw["risk_state"] = risk_state(snapshot)
+    raw.setdefault("regime", "crisis")
+    raw.setdefault("direction", "neutral")
+    raw.setdefault("direction_confidence", 0.0)
+    raw.setdefault("toxic_flow", 0.0)
+    raw.setdefault("setup_quality", 0)
+    raw.setdefault("probability", 0.5)
+    raw.setdefault("action", "hold")
+    raw["backend"] = "api:deep-reread"
+    raw["latency_ms"] = 0
+    try:
+        return ReflexDecision.model_validate(raw)
+    except Exception:
+        return None
+
+
 def load_reflex():
     if reflex_mode() == "api":
         key = os.getenv("REFLEX_API_KEY", "").strip() or os.getenv("JEV_API_KEY", "").strip()

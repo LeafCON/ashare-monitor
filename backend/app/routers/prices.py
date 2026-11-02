@@ -35,6 +35,14 @@ def list_prices_quick(db: Session = Depends(get_db)):
     ]
 
 
+@router.post("/refresh")
+def refresh_prices():
+    """Fetch quotes for the watchlist, then return. Used by the board refresh button."""
+    from ..main import update_prices
+    update_prices()
+    return {"ok": True}
+
+
 @router.get("/{symbol}", response_model=PriceOut)
 def get_price(symbol: str, db: Session = Depends(get_db)):
     """Get cached price for a single symbol."""

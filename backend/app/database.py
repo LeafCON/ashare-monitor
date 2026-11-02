@@ -51,3 +51,5 @@ def init_db():
         tx_columns = {row[1] for row in tx_rows}
         if "manual_value" not in tx_columns:
             conn.exec_driver_sql("ALTER TABLE transactions ADD COLUMN manual_value FLOAT")
+        if "ref_price" not in tx_columns:
+            conn.exec_driver_sql("ALTER TABLE transactions ADD COLUMN ref_price FLOAT")

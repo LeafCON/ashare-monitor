@@ -284,6 +284,21 @@ async function loadCashAccounts() {
 async function loadAgent() {
   try { agentStatus.value = await api('GET', '/api/agent/status') } catch (e) { console.error(e) }
 }
+const assistInfo = ref(null)
+const assistText = ref('')
+const assistBusy = ref(false)
+async function loadAssist() {
+  try { assistInfo.value = await api('GET', '/api/agent/assist') } catch (e) { console.error(e) }
+}
+async function runAssist(target) {
+  assistBusy.value = true
+  assistText.value = ''
+  try {
+    const data = await api('POST', '/api/agent/assist/run', { target })
+    assistText.value = data.text || data.detail || ''
+  } catch (e) { assistText.value = e.message }
+  finally { assistBusy.value = false }
+}
 const venue = ref(null)
 const venueSaving = ref(false)
 const venueNote = ref('')
@@ -358,6 +373,15 @@ async function runPaperTick() {
 async function loadMacro() {
   try { macroIndicators.value = await api('GET', '/api/macro') } catch (e) { console.error('Macro load error:', e) }
 }
+async function refreshBoard() {
+  loading.value = true
+  try {
+    await api('POST', '/api/prices/refresh')
+    await loadDashboard()
+    await loadMacro()
+  } catch (e) { alert(e.message) }
+  finally { loading.value = false }
+}
 function onStockQuery() {
   clearTimeout(searchTimer)
   const q = stockQuery.value.trim()
@@ -374,6 +398,7 @@ async function addSearched(item) {
     searchResults.value = []
     await loadDashboard()
     await loadAlerts()
+    setTimeout(loadDashboard, 4000)
   } catch (e) { alert('添加失败: ' + e.message) }
 }
 async function saveHolding() {
@@ -825,7 +850,7 @@ function switchTab(t) {
     if (t === 'dashboard') { if (dashPieInstance) { dashPieInstance.dispose(); dashPieInstance = null }; renderDashPie(); renderNetWorthChart() }
     if (t === 'portfolio') { if (holdingPieInstance) { holdingPieInstance.dispose(); holdingPieInstance = null }; if (holdingPnlInstance) { holdingPnlInstance.dispose(); holdingPnlInstance = null }; renderHoldingPie(); renderHoldingPnl(); loadAgents(); if (!venue.value) loadVenue() }
     if (t === 'quant') { loadQuantSignals(); loadStrategies(); if (!venue.value) loadVenue() }
-    if (t === 'earnings') { loadEarnings() }
+    if (t === 'earnings') { loadEarnings(); loadAssist() }
     if (t === 'settings') { loadVenue() }
   })
 }
@@ -952,9 +977,9 @@ const txStats = computed(() => {
   return { totalBuy, totalSell, netIn: totalBuy - totalSell, totalFee, count: filteredTx.value.length }
 })
 const filteredHistory = computed(() => { const f = historyFilter.value.toUpperCase(); if (!f) return alertHistory.value; return alertHistory.value.filter(a => a.symbol.includes(f)) })
-const usStockPrices = computed(() => prices.value.filter(p => p.currency !== 'CNY' && p.currency !== 'HKD'))
-const hkStockPrices = computed(() => prices.value.filter(p => p.currency === 'HKD'))
-const cnStockPrices = computed(() => prices.value.filter(p => p.currency === 'CNY'))
+const usStockPrices = computed(() => prices.value.filter(p => symbolMarket(p.symbol) === 'us'))
+const hkStockPrices = computed(() => prices.value.filter(p => symbolMarket(p.symbol) === 'hk'))
+const cnStockPrices = computed(() => prices.value.filter(p => symbolMarket(p.symbol) === 'cn'))
 const quoteGroups = computed(() => [
   { key: 'us', title: L.value.liveUs, rows: usStockPrices.value, empty: L.value.noUs },
   { key: 'hk', title: L.value.liveHk, rows: hkStockPrices.value, empty: L.value.noHk },
@@ -1195,6 +1220,7 @@ onMounted(() => {
   loadTvScript()
   loadDashboard(); loadTransactions(); loadAlerts(); loadCashAccounts(); loadMacro(); loadSnapshots(); loadAgent()
   refreshInterval = setInterval(() => { loadDashboard(); loadMacro() }, 60000)
+  setTimeout(() => { loadDashboard(); loadPortfolio() }, 12000)
   window.addEventListener('resize', () => { dashPieInstance?.resize(); holdingPieInstance?.resize(); holdingPnlInstance?.resize(); quantPeChartInstance?.resize(); netWorthChartInstance?.resize() })
   document.addEventListener('click', closeMoreMenu)
   window.addEventListener('dragover', onWindowDragOver)
@@ -1225,7 +1251,7 @@ onUnmounted(() => { window.__nativeDrop = null; clearInterval(refreshInterval); 
 
   <!-- Dashboard -->
   <div v-if="tab==='dashboard'" class="container">
-    <div class="page-header"><h2>{{ L.dashboard }}</h2><button class="btn-outline btn-sm" @click="loadDashboard();loadMacro()">{{ L.refresh }}</button></div>
+    <div class="page-header"><h2>{{ L.dashboard }}</h2><button class="btn-outline btn-sm" @click="refreshBoard">{{ L.refresh }}</button></div>
     <div class="card" style="margin-bottom:28px">
       <div class="form-group"><label>{{ L.searchLabel }}</label><input v-model="stockQuery" @input="onStockQuery" :placeholder="L.searchPh"></div>
       <div v-for="item in searchResults" :key="item.symbol" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border)">
@@ -1351,6 +1377,8 @@ onUnmounted(() => { window.__nativeDrop = null; clearInterval(refreshInterval); 
       <div class="summary-card"><div class="summary-content"><div class="summary-label">总市值</div><div class="summary-value">{{ holdingSummary.value }}</div><div class="summary-sub" v-if="holdingSummary.valueAlt">{{ holdingSummary.valueAlt }}</div></div></div>
       <div class="summary-card" :class="holdingSummary.pct>=0?'card-positive':'card-negative'"><div class="summary-content"><div class="summary-label">总盈亏</div><div class="summary-value" :class="pnlClass(holdingSummary.pct)">{{ holdingSummary.pnl }} ({{ fmtPct(holdingSummary.pct) }})</div><div class="summary-sub" v-if="holdingSummary.pnlAlt">{{ holdingSummary.pnlAlt }}</div></div></div>
     </div>
+    <p class="hint" v-if="portfolio && portfolio.holdings && portfolio.holdings.some(h => h.by_amount && !h.follows_market)">{{ L.quoteMissing }}</p>
+    <p class="hint" v-else-if="portfolio && portfolio.holdings && portfolio.holdings.some(h => h.follows_market)">{{ L.quoteLive }}</p>
     <div class="grid-2">
       <div>
         <div class="card"><div class="card-header"><h3>{{ L.usHold }}</h3><span class="badge">{{ usHoldings.length }}</span></div>
@@ -1751,6 +1779,19 @@ onUnmounted(() => { window.__nativeDrop = null; clearInterval(refreshInterval); 
   <!-- ═══════ Earnings Calendar ═══════ -->
   <div v-if="tab==='earnings'" class="container">
     <div class="page-header"><h2>{{ L.earnings }}</h2><button class="btn-outline btn-sm" @click="loadEarnings" :disabled="earningsLoading">{{ earningsLoading ? '...' : L.refresh }}</button></div>
+
+    <div class="section-title">研究</div>
+    <div class="card" style="margin-bottom:28px">
+      <ol class="shot-steps">
+        <li v-for="item in (assistInfo && assistInfo.items) || []" :key="item">{{ item }}</li>
+      </ol>
+      <p class="hint">{{ L.assistBody }}<span v-if="assistInfo && assistInfo.agents && assistInfo.agents.length"> {{ assistInfo.agents.join(' · ') }}</span></p>
+      <div class="page-actions">
+        <button type="button" class="btn-primary btn-sm" @click="runAssist('agent')" :disabled="assistBusy">{{ L.assistLocal }}</button>
+        <button type="button" class="btn-outline btn-sm" @click="runAssist('api')" :disabled="assistBusy">{{ L.assistApi }}</button>
+      </div>
+      <p class="hint" v-if="assistText" style="white-space:pre-wrap;margin-top:12px">{{ assistText }}</p>
+    </div>
 
     <!-- 未来财报：倒计时卡片 -->
     <div class="section-title">📆 即将发布</div>

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .execute import submit_market, venue_ready
 from .policy import decide_order
-from .reflex import load_reflex
+from .reflex import deep_reread, load_reflex
 from .schema import MarketSnapshot, PolicyOrder
 
 JOURNAL = Path(__file__).resolve().parents[3] / "data" / "agent_journal.jsonl"
@@ -34,6 +34,14 @@ def run_tick(snapshot: MarketSnapshot, quote_balance: float | None = None, marke
     reflex = load_reflex()
     decision = reflex.judge(snapshot)
     order = decide_order(decision)
+    if order.escalated:
+        deep = deep_reread(snapshot)
+        if deep is not None:
+            decision = deep
+            order = decide_order(deep)
+        if not order.fire:
+            order.reason = "深度重读后仍不发单：" + order.reason
+            order.escalated = True
     execution = apply_execution(order, snapshot.symbol, quote_balance or 0, market)
     record = {
         "snapshot": snapshot.model_dump(),

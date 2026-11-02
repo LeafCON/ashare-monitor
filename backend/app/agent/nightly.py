@@ -33,5 +33,5 @@ def review() -> dict:
         "fired": fired,
         "held": held,
         "brier": brier_score(rows),
-        "note": "No schema rewrite is shipped automatically. Outcomes are absent until the operator labels them.",
+        "note": "校准只记录在本机。闸门不会在夜里被自动改写。深度研究用技能或已配置的接口。",
     }

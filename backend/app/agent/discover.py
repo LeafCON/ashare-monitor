@@ -15,7 +15,7 @@ def _local_json(url: str) -> dict | list | None:
     request = urllib.request.Request(url)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open(request, timeout=3) as response:
+        with opener.open(request, timeout=0.8) as response:
             return json.loads(response.read().decode())
     except Exception:
         return None
@@ -31,7 +31,7 @@ def _ollama_cli_models() -> list[str]:
     if not exe:
         return []
     try:
-        done = subprocess.run([exe, "list"], capture_output=True, text=True, timeout=4, check=False)
+        done = subprocess.run([exe, "list"], capture_output=True, text=True, timeout=1.5, check=False)
     except Exception:
         return []
     names = []

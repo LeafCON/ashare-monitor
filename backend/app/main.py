@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,7 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from .database import init_db, SessionLocal
-from .models import PriceCache, AlertSetting, MarketType, CashLog
+from .models import PriceCache, AlertSetting, MarketType, CashLog, Transaction
 from .services.price_service import fetch_price, fetch_cn_price, fetch_prices_batch
 from .services.alert_service import check_alerts
 
@@ -58,54 +58,44 @@ DEFAULT_WATCHLIST = [
 # ── Background price updater ─────────────────────────────────────────────────
 
 def update_prices():
-    """Fetch latest prices for all alert symbols and update cache.
-
-    Only fetches prices for unique real ticker symbols (deduplicating
-    primary and sub-level alerts that share the same symbol).
-    """
+    """Fetch latest prices, then write them. The database stays closed during the HTTP calls."""
     db = SessionLocal()
     try:
-        alerts = db.query(AlertSetting).all()
-        if not alerts:
-            return
-
-        # Deduplicate: only fetch each real symbol once.
-        # Prefer primary alert's name for display.
         symbol_info: dict[str, dict] = {}
-        for a in alerts:
+        for a in db.query(AlertSetting).all():
             sym = a.symbol
-            if sym not in symbol_info:
+            if sym not in symbol_info or getattr(a, "is_primary", True):
                 symbol_info[sym] = {
                     "name": a.name,
                     "market": a.market.value,
                     "secid": getattr(a, "secid", None),
                 }
-            elif getattr(a, "is_primary", True):
-                symbol_info[sym] = {
-                    "name": a.name,
-                    "market": a.market.value,
-                    "secid": getattr(a, "secid", None) or symbol_info[sym].get("secid"),
-                }
+        for tx in db.query(Transaction).all():
+            symbol_info.setdefault(tx.symbol, {"name": tx.name, "market": "us", "secid": None})
+    finally:
+        db.close()
+    if not symbol_info:
+        return
 
-        all_symbols = list(symbol_info.keys())
-        logger.info(f"Updating prices for {len(all_symbols)} symbols: {', '.join(all_symbols)}")
+    all_symbols = list(symbol_info.keys())
+    logger.info(f"Updating prices for {len(all_symbols)} symbols: {', '.join(all_symbols)}")
+    batch_results = fetch_prices_batch(
+        all_symbols,
+        {sym: info.get("secid") for sym, info in symbol_info.items()},
+    )
 
-        # Batch fetch all at once
-        batch_results = fetch_prices_batch(
-            all_symbols,
-            {sym: info.get("secid") for sym, info in symbol_info.items()},
-        )
-
+    db = SessionLocal()
+    try:
+        priced = {}
         updated = 0
         for symbol, data in batch_results.items():
-            if "error" in data:
-                logger.warning(f"Price fetch error for {symbol}: {data['error']}")
+            if "error" in data or not data.get("price"):
+                if "error" in data:
+                    logger.warning(f"Price fetch error for {symbol}: {data['error']}")
                 continue
-
-            # Use the name from alert settings (better than ticker symbol)
+            priced[data["symbol"]] = data["price"]
             display_name = symbol_info.get(symbol, {}).get("name", data.get("name", ""))
-
-            cached = PriceCache(
+            db.merge(PriceCache(
                 symbol=data["symbol"],
                 name=display_name,
                 price=data["price"],
@@ -116,18 +106,21 @@ def update_prices():
                 market_cap=data.get("market_cap"),
                 currency=data.get("currency", "USD"),
                 updated_at=datetime.now(timezone.utc),
-            )
-            db.merge(cached)
+            ))
             updated += 1
-
+        db.flush()
+        for tx in db.query(Transaction).filter(Transaction.manual_value.isnot(None), Transaction.ref_price.is_(None)).all():
+            price = priced.get(tx.symbol)
+            if price is None:
+                cached = db.query(PriceCache).filter(PriceCache.symbol == tx.symbol).first()
+                price = cached.price if cached else None
+            if price:
+                tx.ref_price = price
         db.commit()
         logger.info(f"Updated {updated}/{len(all_symbols)} prices")
-
-        # Check alerts after price update
         triggered = check_alerts(db)
         if triggered:
             logger.info(f"Triggered {triggered} alerts")
-
     except Exception as e:
         logger.error(f"Price update cycle error: {e}")
     finally:
@@ -213,7 +206,7 @@ async def lifespan(app: FastAPI):
     price_interval = _CONFIG.get("monitor", {}).get("interval_active", 60)
     scheduler.add_job(update_prices, "interval", seconds=price_interval, id="price_updater",
                       max_instances=1,
-                      next_run_time=datetime.now())
+                      next_run_time=datetime.now() + timedelta(seconds=8))
 
     def crypto_tick():
         try:
@@ -250,6 +243,15 @@ async def lifespan(app: FastAPI):
             logger.error(f"Daily snapshot error: {e}")
 
     scheduler.add_job(daily_snapshot, "cron", hour=8, minute=5, id="daily_snapshot")
+
+    def nightly_review():
+        try:
+            from .agent.nightly import review
+            review()
+        except Exception as exc:
+            logger.error(f"Nightly review error: {exc}")
+
+    scheduler.add_job(nightly_review, "cron", hour=15, minute=10, id="nightly_review")
     
     scheduler.start()
     logger.info(f"🚀 Portfolio Monitor started — price updater running every {price_interval}s, quant refresh daily at 16:00 CST, daily snapshot at 16:05 CST")

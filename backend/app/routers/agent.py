@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ..agent.assist import run_agent, run_api, status as assist_status
 from ..agent.live import market_status, scan
 from ..agent.nightly import review
 from ..agent.reflex import HF_MODEL_ID, load_reflex, reflex_mode
@@ -36,6 +38,22 @@ def status():
 @router.get("/review")
 def nightly():
     return review()
+
+
+@router.get("/assist")
+def assist():
+    return assist_status()
+
+
+class AssistRun(BaseModel):
+    target: str = "local"
+
+
+@router.post("/assist/run")
+def assist_run(payload: AssistRun):
+    if payload.target == "api":
+        return run_api()
+    return run_agent()
 
 
 @router.post("/tick")

@@ -154,6 +154,49 @@ def _fetch_tencent(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     return found
 
 
+def _fetch_fund_nav(symbol: str) -> Dict[str, Any] | None:
+    """Daily net value for a fund code when it is not an exchange quote."""
+    text = symbol.upper()
+    code = text[:-3] if text.endswith((".SS", ".SZ", ".BJ")) else text
+    if not (code.isdigit() and len(code) == 6):
+        return None
+    try:
+        response = requests.get(
+            "https://api.fund.eastmoney.com/f10/lsjz",
+            params={"fundCode": code, "pageIndex": 1, "pageSize": 1},
+            headers={"Referer": "https://fund.eastmoney.com/", "User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        row = ((response.json().get("Data") or {}).get("LSJZList") or [None])[0]
+    except Exception as exc:
+        logger.warning("Fund NAV unavailable for %s: %s", symbol, exc)
+        return None
+    if not row or not row.get("DWJZ"):
+        return None
+    try:
+        price = float(row["DWJZ"])
+    except (TypeError, ValueError):
+        return None
+    change_pct = None
+    previous = None
+    try:
+        change_pct = float(row["JZZZL"])
+        previous = round(price / (1 + change_pct / 100), 4)
+    except (TypeError, ValueError, ZeroDivisionError):
+        change_pct = None
+    return {
+        "symbol": symbol,
+        "name": symbol,
+        "price": round(price, 4),
+        "previous_close": previous,
+        "change": round(price - previous, 4) if previous else None,
+        "change_pct": change_pct,
+        "volume": None,
+        "currency": "CNY",
+    }
+
+
 def fetch_cn_prices(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     """Batch A-share quotes. Sina first, Tencent fills the gaps."""
     results: Dict[str, Dict[str, Any]] = {}
@@ -167,6 +210,11 @@ def fetch_cn_prices(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
             results.update(_fetch_tencent(missing))
         except Exception as exc:
             logger.warning("Tencent quotes unavailable: %s", exc)
+    for sym in symbols:
+        if sym not in results:
+            fund = _fetch_fund_nav(sym)
+            if fund:
+                results[sym] = fund
     for sym in symbols:
         results.setdefault(sym, {"symbol": sym, "error": "no quote"})
     return results

@@ -32,6 +32,7 @@ FIELDS: dict[str, tuple[str, bool]] = {
     "vision_api_url": ("VISION_API_URL", False),
     "vision_api_key": ("VISION_API_KEY", True),
     "vision_model": ("VISION_MODEL", False),
+    "cursor_api_key": ("CURSOR_API_KEY", True),
 }
 
 SECRET_FIELDS = {name for name, (_, secret) in FIELDS.items() if secret}
