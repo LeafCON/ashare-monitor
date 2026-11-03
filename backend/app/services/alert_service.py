@@ -1,8 +1,9 @@
-"""Alert checks and Telegram delivery.
+"""Alert checks, Telegram, and optional Grok Bot webhook delivery.
 
-Scheduled alerts follow ALERT_DRY_RUN. The dashboard can force a dry print
-or a real Telegram send. Auto-order is a switch that defaults off. This
-process never clicks a trading client and never stores a trading password.
+Scheduled alerts follow ALERT_DRY_RUN on every channel. The dashboard
+test-send live mode can force a real send. A Grok Bot failure does not
+skip Telegram. Auto-order is a switch that defaults off. This process
+never clicks a trading client and never stores a trading password.
 Without a broker adapter, enabling the switch only records an intent.
 """
 
@@ -39,6 +40,17 @@ def _clean(value: Any) -> str:
     return text
 
 
+def _optional_bool(name: str) -> bool | None:
+    """None when the variable is unset. False only for an explicit off switch."""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text in _PLACEHOLDERS:
+        return None
+    return text in {"1", "true", "yes", "on"}
+
+
 def _load_yaml() -> dict:
     try:
         with open(ROOT / "config.yaml", encoding="utf-8") as handle:
@@ -67,12 +79,29 @@ def runtime_config() -> dict:
         "cooldown": int(alert.get("cooldown", 3600)),
         "max_per_day": int(alert.get("max_per_day", 30)),
         "change_alert_pct": float(monitor.get("change_alert_pct", 3.0)),
+        "grok_bot_webhook_url": _clean(os.getenv("GROK_BOT_WEBHOOK_URL")),
+        "grok_bot_webhook_key": _clean(os.getenv("GROK_BOT_WEBHOOK_KEY")),
+        "grok_bot_alerts": _optional_bool("GROK_BOT_ALERTS"),
     }
 
 
 def telegram_configured() -> bool:
     cfg = runtime_config()
     return bool(cfg["bot_token"] and cfg["chat_id"])
+
+
+def grok_bot_configured() -> bool:
+    cfg = runtime_config()
+    return bool(cfg["grok_bot_webhook_url"] and cfg["grok_bot_webhook_key"])
+
+
+def grok_bot_enabled() -> bool:
+    """On when URL and key are both set, unless GROK_BOT_ALERTS is explicitly false."""
+    cfg = runtime_config()
+    if not (cfg["grok_bot_webhook_url"] and cfg["grok_bot_webhook_key"]):
+        return False
+    flag = cfg["grok_bot_alerts"]
+    return True if flag is None else bool(flag)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -168,6 +197,62 @@ def send_telegram_alert(message: str, *, force_live: bool = False) -> bool:
         return False
 
 
+def _grok_body(message: str, payload: dict | None) -> dict[str, Any]:
+    data = payload or {}
+    return {
+        "text": message,
+        "message": message,
+        "source": "ashare-monitor",
+        "timestamp": datetime.now(CST).isoformat(timespec="seconds"),
+        "symbol": data.get("symbol"),
+        "name": data.get("name"),
+        "alert_type": data.get("alert_type"),
+        "price": data.get("price"),
+        "change_pct": data.get("change_pct"),
+        "rule": data.get("rule"),
+        "group": data.get("group"),
+        "side": data.get("side"),
+    }
+
+
+def send_grok_bot_alert(message: str, *, payload: dict | None = None, force_live: bool = False) -> bool:
+    """POST one alert to the Grok Bot routine webhook.
+
+    Dry-run prints and returns False, same as Telegram, unless force_live.
+    Missing URL/key is silent when this channel is not in use. An explicit
+    GROK_BOT_ALERTS=false skips scheduled sends but still allows force_live.
+    """
+    cfg = runtime_config()
+    url = cfg["grok_bot_webhook_url"]
+    key = cfg["grok_bot_webhook_key"]
+    configured = bool(url and key)
+    explicitly_off = cfg["grok_bot_alerts"] is False
+    if not force_live and (not configured or explicitly_off):
+        return False
+    if cfg["dry_run"] and not force_live:
+        logger.info("[只打印][Grok Bot] %s", message)
+        return False
+    if not configured:
+        logger.error("Grok Bot webhook URL or key is missing")
+        return False
+    body = _grok_body(message, payload)
+    try:
+        resp = requests.post(
+            url,
+            json=body,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=30,
+        )
+        if 200 <= resp.status_code < 300:
+            logger.info("Grok Bot webhook sent status=%s", resp.status_code)
+            return True
+        logger.error("Grok Bot webhook failed status=%s", resp.status_code)
+        return False
+    except Exception as exc:
+        logger.error("Grok Bot alert exception: %s", type(exc).__name__)
+        return False
+
+
 def _record_order_intent(db: Session, symbol: str, side: str, price: float, auto: bool, note: str) -> None:
     db.add(OrderIntent(
         symbol=symbol,
@@ -200,7 +285,28 @@ def _emit(
         _record_order_intent(db, alert.symbol, side, price, True, "未接入券商，未提交委托")
     else:
         _record_order_intent(db, alert.symbol, side, price, False, "请手动确认后自行下单")
-    sent = send_telegram_alert(message, force_live=True)
+    payload = {
+        "symbol": alert.symbol,
+        "name": alert.name or alert.symbol,
+        "alert_type": alert_type,
+        "price": price,
+        "change_pct": change_pct,
+        "rule": rule,
+        "group": group,
+        "side": side,
+    }
+    # 定时告警遵守 ALERT_DRY_RUN。看板上的真发才传 force_live。
+    telegram_sent = False
+    grok_sent = False
+    try:
+        telegram_sent = bool(send_telegram_alert(message, force_live=False))
+    except Exception as exc:
+        logger.error("Telegram channel failed: %s", type(exc).__name__)
+    try:
+        grok_sent = bool(send_grok_bot_alert(message, payload=payload, force_live=False))
+    except Exception as exc:
+        logger.error("Grok Bot channel failed: %s", type(exc).__name__)
+    sent = telegram_sent or grok_sent
     db.add(AlertHistory(
         symbol=alert.symbol,
         alert_type=alert_type,

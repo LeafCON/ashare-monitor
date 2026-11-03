@@ -55,7 +55,7 @@ Telegram、加密货币和股票券商分卡填写。已保存的密钥只显示
 - **自选。** 看板上搜索 `600519`、茅台、`00700`、腾讯或 `AAPL` 后加入。`600519` 记为 `600519.SS`，`000001` 记为 `000001.SZ`，`00700` 或 `700` 记为 `00700.HK`，美股保持字母代码。加入自选只显示行情，不自动建立告警。
 - **行情。** A 股先用新浪，失败再用腾讯。港股、美股和指数卡用东方财富。指数卡包括标普 500、纳斯达克、道琼斯和美元指数。刷新间隔在 `config.yaml` 的 `monitor.interval_active`，单位是秒。
 - **持仓。** 股数可以是小数。金额持仓不要求股数。截图识别和手工录入写进同一张表，可以改、可以删。
-- **告警。** 同一条规则有冷却时间，默认 60 分钟。全天默认不超过 30 条。这两项在 `config.yaml` 的 `alert.cooldown`（秒）和 `alert.max_per_day`。`ALERT_DRY_RUN=true` 时，后台触发的告警只打印；看板上的「真发 Telegram」仍会真的调用 Bot API。
+- **告警。** 同一条规则有冷却时间，默认 60 分钟。全天默认不超过 30 条。这两项在 `config.yaml` 的 `alert.cooldown`（秒）和 `alert.max_per_day`。`ALERT_DRY_RUN=true` 时，后台触发的告警只打印；看板上的「真发」仍会向已配置的通道真实发送。Telegram 可以单独使用。可选的 Grok Bot 需要在 `.env` 填写 `GROK_BOT_WEBHOOK_URL` 和 `GROK_BOT_WEBHOOK_KEY`，请求头是 `Authorization: Bearer <密钥>`。没配齐就只走 Telegram，这一路失败也不会挡住 Telegram。`GROK_BOT_ALERTS=false` 只关掉 Grok Bot 的定时告警。
 - **决策。** 四个市场共用一套闸门。接口没配好就等待。配好之后，通过闸门的决策按该市场的接口发单。本机模型连不上时，状态里会看到当前实际用的后端。
 - **界面。** 左侧栏切换页面。底部可切换语言和主题。
 
@@ -84,6 +84,9 @@ TELEGRAM_CHAT_ID=
 TELEGRAM_THREAD_ID=
 ALERT_DRY_RUN=true
 TRADING_AUTO_ORDER=false
+# 可选。两个都填才会 POST 到 Grok Bot。
+GROK_BOT_WEBHOOK_URL=
+GROK_BOT_WEBHOOK_KEY=
 ```
 
 普通聊天把 `TELEGRAM_THREAD_ID` 留空。只有 Forum 话题群才需要填写。

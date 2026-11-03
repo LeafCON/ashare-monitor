@@ -29,11 +29,16 @@ class TradingSwitch(BaseModel):
 @router.get("/notify-status")
 def notify_status(db: Session = Depends(get_db)):
     """Push mode and the auto-order switch. Never returns the bot token."""
-    from ..services.alert_service import alerts_today, auto_order_enabled, runtime_config, telegram_configured
+    from ..services.alert_service import (
+        alerts_today, auto_order_enabled, grok_bot_configured, grok_bot_enabled,
+        runtime_config, telegram_configured,
+    )
     cfg = runtime_config()
     return {
         "dry_run": cfg["dry_run"],
         "telegram_configured": telegram_configured(),
+        "grok_bot_configured": grok_bot_configured(),
+        "grok_bot_enabled": grok_bot_enabled(),
         "cooldown_minutes": round(cfg["cooldown"] / 60),
         "max_per_day": cfg["max_per_day"],
         "change_alert_pct": cfg["change_alert_pct"],
@@ -57,23 +62,80 @@ def update_trading(payload: TradingSwitch, db: Session = Depends(get_db)):
 
 @router.post("/test-send")
 def test_alert_send(mode: str = Query("dry", pattern="^(dry|live)$")):
-    """mode=dry 只打印；mode=live 才请求 Telegram。"""
-    from ..services.alert_service import format_signal, send_telegram_alert, telegram_configured
+    """mode=dry 只打印；mode=live 向已配置的 Telegram 和 Grok Bot 真实发送。"""
+    import logging
+
+    from ..services.alert_service import (
+        format_signal, grok_bot_configured, grok_bot_enabled,
+        send_grok_bot_alert, send_telegram_alert, telegram_configured,
+    )
     text = format_signal("600519.SS", "贵州茅台", 0, 0, "test", "A股")
     text = text.replace("现价0.00", "现价(测试)").replace("涨跌+0.00%", "涨跌(测试)")
+    payload = {
+        "symbol": "600519.SS",
+        "name": "贵州茅台",
+        "alert_type": "test",
+        "price": None,
+        "change_pct": None,
+        "rule": "test",
+        "group": "A股",
+        "side": None,
+    }
+    tg_on = telegram_configured()
+    grok_on = grok_bot_configured()
+    grok_enabled = grok_bot_enabled()
     if mode == "dry":
-        import logging
         logging.getLogger(__name__).info("[只打印] %s", text)
-        return {"sent": False, "dry_run": True, "printed": True, "text": text}
-    if not telegram_configured():
-        return {"sent": False, "dry_run": False, "printed": False, "text": text, "detail": "未配置 Telegram。请在 .env 填写后再真发。"}
-    sent = send_telegram_alert(text, force_live=True)
+        return {
+            "sent": False,
+            "dry_run": True,
+            "printed": True,
+            "text": text,
+            "detail": None,
+            "telegram": {"configured": tg_on, "sent": False, "detail": None},
+            "grok_bot": {"configured": grok_on, "enabled": grok_enabled, "sent": False, "detail": None},
+        }
+    if not tg_on and not grok_on:
+        return {
+            "sent": False,
+            "dry_run": False,
+            "printed": False,
+            "text": text,
+            "detail": "未配置 Telegram 或 Grok Bot。请在 .env 填写后再真发。",
+            "telegram": {"configured": False, "sent": False, "detail": "未配置"},
+            "grok_bot": {"configured": False, "enabled": False, "sent": False, "detail": "未配置"},
+        }
+
+    tg_sent = False
+    tg_detail = None if tg_on else "未配置"
+    if tg_on:
+        try:
+            tg_sent = bool(send_telegram_alert(text, force_live=True))
+        except Exception:
+            tg_sent = False
+        if not tg_sent:
+            tg_detail = "Telegram 拒绝了这次发送"
+
+    grok_sent = False
+    grok_detail = None if grok_on else "未配置"
+    if grok_on:
+        try:
+            grok_sent = bool(send_grok_bot_alert(text, payload=payload, force_live=True))
+        except Exception:
+            grok_sent = False
+        if not grok_sent:
+            grok_detail = "Grok Bot 拒绝了这次发送"
+
+    sent = bool(tg_sent or grok_sent)
+    failed = [item for item in (tg_detail, grok_detail) if item and item != "未配置"]
     return {
         "sent": sent,
         "dry_run": False,
         "printed": False,
         "text": text,
-        "detail": None if sent else "Telegram 拒绝了这次发送",
+        "detail": None if not failed else "；".join(failed),
+        "telegram": {"configured": tg_on, "sent": tg_sent, "detail": tg_detail},
+        "grok_bot": {"configured": grok_on, "enabled": grok_enabled, "sent": grok_sent, "detail": grok_detail},
     }
 
 
