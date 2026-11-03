@@ -304,6 +304,7 @@ const venueSaving = ref(false)
 const venueNote = ref('')
 const venueForm = ref({
   telegram_bot_token: '', telegram_chat_id: '', telegram_thread_id: '', alert_dry_run: true,
+  grok_bot_webhook_url: '', grok_bot_webhook_key: '', grok_bot_alerts: true,
   binance_api_key: '', binance_api_secret: '',
   stock_broker_api_base: '', stock_broker_api_key: '', stock_broker_api_secret: '',
   stock_broker_markets: 'cn,hk,us', stock_broker_quote_balance: '0',
@@ -315,6 +316,10 @@ function fillVenue(data) {
   venueForm.value.telegram_chat_id = data.telegram.chat_id || ''
   venueForm.value.telegram_thread_id = data.telegram.thread_id || ''
   venueForm.value.alert_dry_run = !!data.telegram.dry_run
+  if (data.grok_bot) {
+    venueForm.value.grok_bot_webhook_url = data.grok_bot.url || ''
+    venueForm.value.grok_bot_alerts = data.grok_bot.alerts !== false
+  }
   venueForm.value.stock_broker_api_base = data.broker.base || ''
   venueForm.value.stock_broker_markets = data.broker.markets || 'cn,hk,us'
   venueForm.value.stock_broker_quote_balance = data.broker.quote_balance || '0'
@@ -339,12 +344,13 @@ async function saveVenue() {
   venueSaving.value = true
   venueNote.value = ''
   const body = { ...venueForm.value }
-  for (const key of ['telegram_bot_token', 'telegram_chat_id', 'binance_api_key', 'binance_api_secret', 'stock_broker_api_key', 'stock_broker_api_secret', 'jev_api_key', 'reflex_api_key']) {
+  for (const key of ['telegram_bot_token', 'telegram_chat_id', 'grok_bot_webhook_key', 'binance_api_key', 'binance_api_secret', 'stock_broker_api_key', 'stock_broker_api_secret', 'jev_api_key', 'reflex_api_key']) {
     if (!body[key]) delete body[key]
   }
   try {
     fillVenue(await api('PUT', '/api/settings', body))
     venueForm.value.telegram_bot_token = ''
+    venueForm.value.grok_bot_webhook_key = ''
     venueForm.value.binance_api_key = ''
     venueForm.value.binance_api_secret = ''
     venueForm.value.stock_broker_api_key = ''
@@ -929,12 +935,21 @@ async function saveAlert() {
 }
 async function toggleAlert(a) { try { await api('PUT', '/api/alerts/' + a.id, { enabled: !a.enabled }); loadAlerts() } catch (e) { alert('切换失败') } }
 async function deleteAlert(id) { if (!confirm('确认删除？')) return; try { await api('DELETE', '/api/alerts/' + id); loadAlerts() } catch (e) { alert('删除失败') } }
+function channelReport(r) {
+  const line = (name, row) => {
+    if (!row) return ''
+    if (!row.configured) return name + '：未配置'
+    return name + '：' + (row.sent ? '已发送' : (row.detail || '失败'))
+  }
+  const lines = [line('Telegram', r.telegram), line('Grok Bot', r.grok_bot)].filter(Boolean)
+  return lines.length ? lines.join('\n') : (r.detail || '')
+}
 async function testAlert(mode) {
   testingAlert.value = true
   try {
     const r = await api('POST', '/api/alerts/test-send?mode=' + mode)
-    if (mode === 'dry') alert('只打印，没有发送 Telegram：\n\n' + r.text)
-    else alert(r.sent ? '已发送到 Telegram：\n\n' + r.text : ('没有发送：' + (r.detail || '失败') + '\n\n' + r.text))
+    if (mode === 'dry') alert('只打印，没有发送：\n\n' + r.text)
+    else alert(channelReport(r) + '\n\n' + r.text)
   } catch (e) { alert('测试失败: ' + e.message) }
   finally { testingAlert.value = false }
 }
@@ -1449,7 +1464,7 @@ onUnmounted(() => { window.__nativeDrop = null; clearInterval(refreshInterval); 
       </div>
     </div>
     <div class="card" style="margin-bottom:28px" v-if="notifyStatus">
-      <div>{{ L.strategyNote }} Token {{ notifyStatus.telegram_configured ? L.tokenOn : L.tokenOff }} · {{ L.cooldown }} {{ notifyStatus.cooldown_minutes }} {{ L.minutes }} · {{ L.dailyCap }} {{ notifyStatus.max_per_day }}</div>
+      <div>{{ L.strategyNote }} Telegram {{ notifyStatus.telegram_configured ? L.tokenOn : L.tokenOff }} · Grok Bot {{ notifyStatus.grok_bot_configured ? (notifyStatus.grok_bot_enabled ? L.tokenOn : L.grokPaused) : L.tokenOff }} · {{ L.cooldown }} {{ notifyStatus.cooldown_minutes }} {{ L.minutes }} · {{ L.dailyCap }} {{ notifyStatus.max_per_day }}</div>
       <label style="display:inline-flex;align-items:center;gap:8px;margin-top:8px">
         <input type="checkbox" :checked="notifyStatus.auto_order" @change="toggleAutoOrder">
         {{ L.autoOrder }}
@@ -2085,6 +2100,17 @@ onUnmounted(() => { window.__nativeDrop = null; clearInterval(refreshInterval); 
         </div>
         <label class="check-row"><input type="checkbox" v-model="venueForm.alert_dry_run"> {{ L.dryRun }}</label>
         <button v-if="venue && venue.telegram.token_set" type="button" class="text-action" @click="clearVenue('telegram_bot_token')">{{ L.clearKey }}</button>
+      </section>
+      <section class="card settings-card">
+        <h3>{{ L.grokSection }}</h3>
+        <p class="hint"><span class="state-pill" :class="venue && venue.grok_bot && venue.grok_bot.configured ? 'on' : ''">{{ venue && venue.grok_bot && venue.grok_bot.configured ? L.configured : L.notConfigured }}</span> {{ venue && venue.grok_bot ? venue.grok_bot.key_hint : '' }}</p>
+        <p class="hint">{{ L.grokHint }}</p>
+        <div class="form-grid">
+          <div class="form-group"><label>{{ L.grokUrl }}</label><input v-model="venueForm.grok_bot_webhook_url" autocomplete="off" :placeholder="L.grokUrlPh"></div>
+          <div class="form-group"><label>{{ L.grokKey }}</label><input v-model="venueForm.grok_bot_webhook_key" type="password" autocomplete="off" :placeholder="venue && venue.grok_bot && venue.grok_bot.key_set ? venue.grok_bot.key_hint : ''"></div>
+        </div>
+        <label class="check-row"><input type="checkbox" v-model="venueForm.grok_bot_alerts"> {{ L.grokEnable }}</label>
+        <button v-if="venue && venue.grok_bot && venue.grok_bot.key_set" type="button" class="text-action" @click="clearVenue('grok_bot_webhook_key')">{{ L.clearKey }}</button>
       </section>
       <section class="card settings-card">
         <h3>{{ L.cryptoSection }}</h3>

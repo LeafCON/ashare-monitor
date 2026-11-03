@@ -55,7 +55,7 @@ The sidebar also has alert history, trades, cash, and earnings. Cash is split in
 - **Watchlist.** On the board, search `600519`, 茅台, `00700`, 腾讯, or `AAPL`, then add it. `600519` is stored as `600519.SS`, `000001` as `000001.SZ`, `00700` or `700` as `00700.HK`. US tickers stay as letters. Adding a symbol does not create an alert.
 - **Quotes.** A-shares come from Sina, then Tencent if Sina fails. Hong Kong, US names, and the index cards come from Eastmoney. The index cards are the S&P 500, Nasdaq, Dow Jones, and the US Dollar Index. The refresh interval is `monitor.interval_active` in `config.yaml`, in seconds.
 - **Holdings.** Share counts can be fractional. An amount position does not need a share count. Screenshot rows and hand-entered rows sit in the same list and can be edited or removed.
-- **Alerts.** The same rule waits out a cooldown, 60 minutes by default. The daily cap defaults to 30. Both are in `config.yaml`: `alert.cooldown` is in seconds, and `alert.max_per_day` is the cap. With `ALERT_DRY_RUN=true`, a background hit is only printed. **Send to Telegram** on the alerts page still calls the Bot API.
+- **Alerts.** The same rule waits out a cooldown, 60 minutes by default. The daily cap defaults to 30. Both are in `config.yaml`: `alert.cooldown` is in seconds, and `alert.max_per_day` is the cap. With `ALERT_DRY_RUN=true`, a background hit is only printed. **Send live** on the alerts page still posts to each configured channel. Telegram works on its own. Optional Grok Bot delivery needs `GROK_BOT_WEBHOOK_URL` and `GROK_BOT_WEBHOOK_KEY` in `.env`, sent as `Authorization: Bearer <key>`. If either value is missing, only Telegram is used, and a Grok Bot failure does not block Telegram. `GROK_BOT_ALERTS=false` turns off scheduled Grok Bot posts only.
 - **Decisions.** All four markets share one gate. An unconfigured market waits. When the interface is filled in, a decision that passes the gate is sent through that market’s API. If the local model server is down, the status line shows the backend that is actually running.
 - **Window.** The left sidebar switches pages. Language and theme sit at the bottom of the sidebar.
 
@@ -84,6 +84,9 @@ TELEGRAM_CHAT_ID=
 TELEGRAM_THREAD_ID=
 ALERT_DRY_RUN=true
 TRADING_AUTO_ORDER=false
+# Optional. Both values are required before a Grok Bot POST.
+GROK_BOT_WEBHOOK_URL=
+GROK_BOT_WEBHOOK_KEY=
 ```
 
 Leave `TELEGRAM_THREAD_ID` empty for a normal chat. It is only for a forum topic.

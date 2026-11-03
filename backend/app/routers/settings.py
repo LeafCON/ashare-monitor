@@ -18,6 +18,9 @@ class SettingsUpdate(BaseModel):
     telegram_chat_id: Optional[str] = None
     telegram_thread_id: Optional[str] = None
     alert_dry_run: Optional[bool] = None
+    grok_bot_webhook_url: Optional[str] = None
+    grok_bot_webhook_key: Optional[str] = None
+    grok_bot_alerts: Optional[bool] = None
     binance_api_key: Optional[str] = None
     binance_api_secret: Optional[str] = None
     stock_broker_api_base: Optional[str] = None
@@ -38,6 +41,22 @@ class SettingsUpdate(BaseModel):
     clear: list[str] = Field(default_factory=list)
 
 
+def _grok_status() -> dict:
+    url = read_env("GROK_BOT_WEBHOOK_URL")
+    key = read_env("GROK_BOT_WEBHOOK_KEY")
+    flag = read_env("GROK_BOT_ALERTS", "")
+    alerts = None if flag == "" else flag.lower() in {"1", "true", "yes", "on"}
+    configured = bool(url and key)
+    return {
+        "url": url,
+        "key_set": bool(key),
+        "key_hint": hint(key),
+        "alerts": alerts,
+        "configured": configured,
+        "enabled": configured and alerts is not False,
+    }
+
+
 def _status() -> dict:
     markets = read_env("STOCK_BROKER_MARKETS", "cn,hk,us") or "cn,hk,us"
     return {
@@ -48,6 +67,7 @@ def _status() -> dict:
             "thread_id": read_env("TELEGRAM_THREAD_ID"),
             "dry_run": truthy("ALERT_DRY_RUN", "true"),
         },
+        "grok_bot": _grok_status(),
         "binance": {
             "key_set": bool(read_env("BINANCE_API_KEY")),
             "key_hint": hint(read_env("BINANCE_API_KEY")),
